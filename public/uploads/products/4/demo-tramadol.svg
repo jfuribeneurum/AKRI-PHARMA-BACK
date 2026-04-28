@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+  <rect width="640" height="480" fill="#FFF7ED"/>
+  <rect x="40" y="40" width="560" height="400" rx="24" fill="#FFFFFF" stroke="#FED7AA" stroke-width="5"/>
+  <rect x="76" y="72" width="160" height="70" rx="16" fill="#F97316"/>
+  <text x="104" y="116" font-family="Arial, Helvetica, sans-serif" font-size="28" fill="#FFFFFF" font-weight="700">CONTROLADO</text>
+  <text x="78" y="200" font-family="Arial, Helvetica, sans-serif" font-size="34" fill="#111827" font-weight="700">Tramadol 50 mg</text>
+  <text x="78" y="244" font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#64748B">Monitoreo de dispensación y lote</text>
+  <rect x="78" y="284" width="240" height="48" rx="24" fill="#FEE2E2"/>
+  <text x="112" y="315" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#B91C1C">Requiere receta médica</text>
+  <rect x="364" y="128" width="176" height="240" rx="24" fill="#6D28D9"/>
+  <rect x="396" y="158" width="112" height="150" rx="16" fill="#FFFFFF" opacity="0.1"/>
+  <text x="410" y="225" font-family="Arial, Helvetica, sans-serif" font-size="30" fill="#FFFFFF" font-weight="700">SKU</text>
+  <text x="380" y="270" font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#FFFFFF">TRAM-50-CAP</text>
+  <text x="384" y="327" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#FFFFFF">770000000004</text>
+</svg>

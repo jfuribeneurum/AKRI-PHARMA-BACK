@@ -1,0 +1,212 @@
+openapi: 3.1.0
+info:
+  title: AkriPharmacy API
+  version: 24.0.0
+  description: >-
+    API backend para AkriPharmacy con inventario farmacéutico multisede, cadena de frío,
+    dispensación, solicitudes de compra entre sedes, gestión de perfiles/usabilidades,
+    trazabilidad terminada y centro operativo integrado.
+servers:
+  - url: http://localhost:8080/api
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Estado básico del backend
+      security: []
+  /ready:
+    get:
+      summary: Estado backend + MariaDB
+      security: []
+  /status/overview:
+    get:
+      summary: Diagnóstico consolidado de conectividad y operación
+  /metrics:
+    get:
+      summary: Exponer métricas tipo Prometheus
+      security: []
+  /auth/login:
+    post:
+      summary: Iniciar sesión y resolver sede activa autorizada
+      security: []
+  /auth/select-site:
+    post:
+      summary: Cambiar la sede activa del usuario autenticado
+  /dashboard/summary:
+    get:
+      summary: KPIs y resumen del dashboard
+  /inventory/stock:
+    get:
+      summary: Consultar stock por lote y ubicación
+  /dispensing:
+    get:
+      summary: Listar dispensaciones recientes
+    post:
+      summary: Registrar dispensación
+  /reports/inventory/export:
+    get:
+      summary: Exportar inventario en JSON, Excel o PDF
+  /multisite/context:
+    get:
+      summary: Obtener contexto multisede del usuario, sedes autorizadas y alertas
+  /multisite/purchase-requests:
+    get:
+      summary: Listar solicitudes de compra entre sedes según alcance del usuario
+    post:
+      summary: Crear solicitud de compra desde una sede periférica hacia central
+  /multisite/purchase-requests/{id}:
+    get:
+      summary: Obtener detalle de solicitud de compra entre sedes
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+    patch:
+      summary: Actualizar estado de una solicitud desde sede central
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+  /admin/lookups:
+    get:
+      summary: Catálogos auxiliares para administración
+  /admin/audit:
+    get:
+      summary: Auditoría administrativa de altas, cambios, bajas y adjudicaciones
+  /admin/sites:
+    get:
+      summary: Listar sedes y métricas locales por sede
+    post:
+      summary: Crear sede con provisión automática de estructura base
+  /admin/sites/{id}/audit:
+    get:
+      summary: Consultar la auditoría cronológica de una sede específica
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+  /admin/sites/{id}:
+    put:
+      summary: Actualizar datos de una sede
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+    delete:
+      summary: Desactivar lógicamente una sede periférica
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+  /admin/profiles:
+    get:
+      summary: Listar perfiles/roles
+    post:
+      summary: Crear perfil
+  /admin/profiles/{id}:
+    put:
+      summary: Actualizar perfil
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+    delete:
+      summary: Eliminar o desactivar perfil
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+  /admin/profiles/{id}/usabilities:
+    get:
+      summary: Obtener matriz de usabilidades por perfil
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+    put:
+      summary: Reemplazar matriz de usabilidades por perfil
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+  /admin/users:
+    get:
+      summary: Listar usuarios y sedes asignadas
+    post:
+      summary: Crear usuario
+  /admin/users/{id}:
+    put:
+      summary: Actualizar usuario
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+    delete:
+      summary: Desactivar lógicamente un usuario
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+  /admin/users/{id}/assignment:
+    patch:
+      summary: Adjudicar perfil y sedes autorizadas a un usuario
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+  /purchases:
+    get:
+      summary: Listar órdenes de compra; alcance centralizado
+    post:
+      summary: Crear orden de compra; solo sede central
+  /purchases/{id}/receive:
+    post:
+      summary: Registrar recepción de orden de compra; solo sede central
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+  /signatures/profile:
+    get:
+      summary: Obtener perfil de firma avanzada del usuario actual
+    put:
+      summary: Crear o actualizar perfil de firma avanzada
+  /signatures/sign:
+    post:
+      summary: Firmar digitalmente un proceso terminado
+  /signatures/recent:
+    get:
+      summary: Listar firmas avanzadas recientes
