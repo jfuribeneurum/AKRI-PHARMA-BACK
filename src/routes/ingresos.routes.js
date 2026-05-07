@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { asyncHandler } from '../middleware/error-handler.js';
+import { asyncHandler } from '../utils/async-handler.js';
 import { validate } from '../middleware/validate.js';
 import { z } from 'zod';
 import { pool } from '../config/db.js';

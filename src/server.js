@@ -40,17 +40,45 @@ async function waitForDatabase() {
   throw lastError ?? new Error('No fue posible conectar con MariaDB durante el arranque');
 }
 
+function listenOnPort(port) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port);
+
+    server.once('listening', () => resolve({ server, port }));
+    server.once('error', (error) => reject(error));
+  });
+}
+
+async function startServer(port, maxRetries = 10) {
+  let attemptPort = port;
+
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    try {
+      const result = await listenOnPort(attemptPort);
+      return result.port;
+    } catch (error) {
+      if (error.code !== 'EADDRINUSE') {
+        throw error;
+      }
+
+      console.warn(`[startup] Puerto ${attemptPort} ocupado${attempt < maxRetries - 1 ? ', intentando siguiente puerto' : ''}`);
+      attemptPort += 1;
+    }
+  }
+
+  throw new Error(`No fue posible abrir un puerto libre entre ${port} y ${port + maxRetries - 1}`);
+}
+
 async function start() {
   try {
     await waitForDatabase();
     await ensureRuntimeSchema();
 
-    app.listen(env.PORT, () => {
-      console.log(`AkriPharmacy backend escuchando en puerto ${env.PORT}`);
-      startColdChainAutoPolling();
-    });
+    const activePort = await startServer(env.PORT);
+    console.log(`AkriPharmacy backend escuchando en puerto ${activePort}`);
+    startColdChainAutoPolling();
   } catch (error) {
-    console.error('[startup] Error fatal al conectar con MariaDB:', error.message);
+    console.error('[startup] Error fatal al iniciar el backend:', error.message);
     process.exit(1);
   }
 }
