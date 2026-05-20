@@ -70,6 +70,12 @@ async function ensureProductExists(id) {
   return product;
 }
 
+export async function listLaboratorios() {
+  return query(
+    `SELECT id_laboratorio, nombre, pais, contacto, telefono, email FROM laboratorios WHERE activo = TRUE ORDER BY nombre ASC`
+  );
+}
+
 export async function listProducts(search = '') {
   const wildcard = `%${search}%`;
 
@@ -90,6 +96,7 @@ export async function listProducts(search = '') {
         COALESCE(stock.stock_actual, 0) AS stock_actual,
         ff.nombre AS forma_farmaceutica,
         cp.nombre AS categoria,
+        lab.nombre AS laboratorio_nombre,
         (
           SELECT CONCAT(?, '/', pi.url_relativa)
           FROM productos_imagenes pi
@@ -100,6 +107,7 @@ export async function listProducts(search = '') {
      FROM productos p
      LEFT JOIN formas_farmaceuticas ff ON ff.id_forma = p.id_forma
      LEFT JOIN categorias_producto cp ON cp.id_categoria = p.id_categoria
+     LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
      LEFT JOIN (
         SELECT l.id_producto, ROUND(COALESCE(SUM(e.cantidad_disponible), 0), 3) AS stock_actual
         FROM lotes l
@@ -208,6 +216,13 @@ export async function getProductById(id) {
 
   const images = await listProductImages(id);
 
+  const labRows = product.id_laboratorio
+    ? await query(
+        `SELECT id_laboratorio, nombre, pais, contacto, telefono, email FROM laboratorios WHERE id_laboratorio = ?`,
+        [product.id_laboratorio]
+      )
+    : [];
+
   return {
     ...product,
     stock_total: Number(stockSummary?.stock_total ?? 0),
@@ -215,7 +230,8 @@ export async function getProductById(id) {
     stock_reservada: Number(stockSummary?.stock_reservada ?? 0),
     imagen_principal_url: images[0]?.url ?? null,
     images,
-    stock_lotes: stockLotes
+    stock_lotes: stockLotes,
+    laboratorio: labRows[0] ?? null
   };
 }
 

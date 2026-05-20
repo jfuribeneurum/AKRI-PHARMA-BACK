@@ -10,7 +10,8 @@ import {
   getProductById,
   getProductByBarcode,
   listProductImages,
-  saveProductImage
+  saveProductImage,
+  listLaboratorios
 } from '../services/product.service.js';
 
 const productSchema = z.object({
@@ -48,6 +49,15 @@ const productMediaSchema = z.object({
 });
 
 export const productsRouter = Router();
+
+productsRouter.get(
+  '/lookups',
+  authRequired,
+  asyncHandler(async (_req, res) => {
+    const laboratorios = await listLaboratorios();
+    res.json({ success: true, data: { laboratorios } });
+  })
+);
 
 productsRouter.get(
   '/',
