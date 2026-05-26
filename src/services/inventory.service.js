@@ -131,6 +131,8 @@ export async function listStock(search = '') {
         l.id_lote,
         l.numero_lote,
         l.fecha_vencimiento,
+        e.id_almacen AS id_almacen,
+        e.id_ubicacion AS id_ubicacion,
         a.nombre AS almacen,
         a.tipo AS tipo_almacen,
         u.nombre AS ubicacion,
