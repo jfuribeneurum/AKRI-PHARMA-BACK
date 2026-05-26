@@ -42,7 +42,7 @@ export const purchasesRouter = Router();
 purchasesRouter.get(
   '/',
   authRequired,
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const data = await listPurchases(req.user);
     res.json({ success: true, data });
   })
