@@ -29,6 +29,7 @@ import { traceabilityRouter } from './routes/traceability.routes.js';
 import { monitoringRouter } from './routes/monitoring.routes.js';
 import { signaturesRouter } from './routes/signatures.routes.js';
 import { multisiteRouter } from './routes/multisite.routes.js';
+import { pacientesRouter } from './routes/pacientes.routes.js';
 import { requestTraceMiddleware } from './middleware/request-trace.js';
 import { errorHandler } from './middleware/error-handler.js';
 
@@ -134,6 +135,7 @@ app.use('/api/scanners', scannersRouter);
 app.use('/api/traceability', traceabilityRouter);
 app.use('/api/signatures', signaturesRouter);
 app.use('/api/multisite', multisiteRouter);
+app.use('/api/pacientes', pacientesRouter);
 app.use('/', monitoringRouter);
 
 app.use((_req, res) => {
