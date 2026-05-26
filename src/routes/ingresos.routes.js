@@ -20,8 +20,8 @@ const ingresoSchema = z.object({
 router.get('/', asyncHandler(async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const ingresos = await connection.query(`
-      SELECT 
+    const [ingresos] = await connection.query(`
+      SELECT
         id_ingreso,
         referencia,
         producto,
@@ -35,7 +35,7 @@ router.get('/', asyncHandler(async (req, res) => {
       FROM ingresos
       ORDER BY created_at DESC
     `);
-    
+
     res.json({
       success: true,
       data: ingresos
@@ -70,7 +70,7 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
 router.get('/:id', asyncHandler(async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const [ingreso] = await connection.query(`
+    const [[ingreso]] = await connection.query(`
       SELECT * FROM ingresos WHERE id_ingreso = ?
     `, [req.params.id]);
     
