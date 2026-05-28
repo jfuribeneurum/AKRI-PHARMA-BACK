@@ -47,7 +47,7 @@ export async function listPurchases(user = null) {
   }
 
   return query(
-    `SELECT oc.*, p.nombre AS proveedor, s.nombre AS sede
+    `SELECT oc.*, COALESCE(p.razon_social, p.nombre) AS proveedor, s.nombre AS sede
        FROM ordenes_compra oc
        INNER JOIN proveedores p ON p.id_proveedor = oc.id_proveedor
        LEFT JOIN sedes s ON s.id_sede = oc.id_sede

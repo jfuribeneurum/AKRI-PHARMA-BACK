@@ -495,7 +495,7 @@ async function fetchPurchasesDataset(search = '') {
   const like = `%${filter}%`;
   const where = filter
     ? `WHERE (
-        oc.numero_oc LIKE ? OR p.nombre LIKE ? OR oc.estado LIKE ? OR pr.nombre_comercial LIKE ? OR pr.sku LIKE ?
+        oc.numero_oc LIKE ? OR COALESCE(p.razon_social, p.nombre) LIKE ? OR oc.estado LIKE ? OR pr.nombre_comercial LIKE ? OR pr.sku LIKE ?
       )`
     : '';
   const params = filter ? [like, like, like, like, like] : [];
@@ -506,7 +506,7 @@ async function fetchPurchasesDataset(search = '') {
         oc.numero_oc,
         oc.fecha,
         oc.estado,
-        p.nombre AS proveedor,
+        COALESCE(p.razon_social, p.nombre) AS proveedor,
         COUNT(DISTINCT ocd.id_oc_detalle) AS lineas,
         ROUND(COALESCE(SUM(ocd.cantidad), 0), 3) AS unidades_solicitadas,
         oc.subtotal,
@@ -535,7 +535,7 @@ async function fetchPurchasesDataset(search = '') {
         oc.numero_oc,
         oc.fecha,
         oc.estado,
-        p.nombre,
+        COALESCE(p.razon_social, p.nombre),
         oc.subtotal,
         oc.impuestos,
         oc.total,
@@ -550,7 +550,7 @@ async function fetchPurchasesDataset(search = '') {
     `SELECT
         oc.numero_oc,
         oc.fecha,
-        p.nombre AS proveedor,
+        COALESCE(p.razon_social, p.nombre) AS proveedor,
         pr.sku,
         pr.nombre_comercial,
         ocd.cantidad,
