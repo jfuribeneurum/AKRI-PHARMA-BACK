@@ -1,0 +1,16 @@
+openapi: 3.0.3
+info:
+  title: AkriPharmacy SIESA Adapter
+  version: 1.0.0
+paths:
+  /api/billing/invoices/{id}/submit-siesa:
+    post:
+      summary: Envía una factura del ERP al adaptador SIESA
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Resultado integración
