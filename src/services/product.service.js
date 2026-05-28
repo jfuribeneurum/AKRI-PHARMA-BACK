@@ -52,8 +52,9 @@ function parseImageDataUrl(dataUrl) {
 
 async function ensureProductExists(id) {
   const rows = await query(
-    `SELECT id_producto, sku, codigo_barras, nombre_comercial, principio_activo, concentracion,
-            unidad_medida, id_categoria, id_forma, codigo_atc, id_laboratorio, tipo_producto,
+    `SELECT id_producto, id_medicamento_hs, sku, codigo_barras, nombre_comercial, principio_activo,
+            concentracion, presentacion, unidad_medida, registro_invima, cum, consecutivo_cum,
+            id_categoria, id_forma, codigo_atc, id_laboratorio, tipo_producto,
             requiere_receta, es_controlado, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
             costo_referencia, precio_venta, stock_minimo, stock_maximo, punto_reorden, activo,
             fecha_creacion, fecha_modificacion
@@ -72,7 +73,15 @@ async function ensureProductExists(id) {
 
 export async function listLaboratorios() {
   return query(
-    `SELECT id_laboratorio, nombre, pais, contacto, telefono, email FROM laboratorios WHERE activo = TRUE ORDER BY nombre ASC`
+    `SELECT id_proveedor AS id_laboratorio,
+            COALESCE(razon_social, nombre) AS nombre,
+            ciudad AS pais,
+            nombres AS contacto,
+            telefono,
+            email
+       FROM proveedores
+      WHERE activo = TRUE
+      ORDER BY COALESCE(razon_social, nombre) ASC`
   );
 }
 
@@ -82,6 +91,7 @@ export async function listProducts(search = '') {
   return query(
     `SELECT
         p.id_producto,
+        p.id_medicamento_hs,
         p.sku,
         p.codigo_barras,
         p.nombre_comercial,
@@ -96,7 +106,7 @@ export async function listProducts(search = '') {
         COALESCE(stock.stock_actual, 0) AS stock_actual,
         ff.nombre AS forma_farmaceutica,
         cp.nombre AS categoria,
-        lab.nombre AS laboratorio_nombre,
+        COALESCE(lab.razon_social, lab.nombre) AS laboratorio_nombre,
         (
           SELECT CONCAT(?, '/', pi.url_relativa)
           FROM productos_imagenes pi
@@ -107,14 +117,17 @@ export async function listProducts(search = '') {
      FROM productos p
      LEFT JOIN formas_farmaceuticas ff ON ff.id_forma = p.id_forma
      LEFT JOIN categorias_producto cp ON cp.id_categoria = p.id_categoria
-     LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
+     LEFT JOIN proveedores lab ON lab.id_proveedor = p.id_laboratorio
      LEFT JOIN (
         SELECT l.id_producto, ROUND(COALESCE(SUM(e.cantidad_disponible), 0), 3) AS stock_actual
         FROM lotes l
         LEFT JOIN existencias e ON e.id_lote = l.id_lote
         GROUP BY l.id_producto
      ) stock ON stock.id_producto = p.id_producto
-     WHERE (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.principio_activo LIKE ? OR p.codigo_barras LIKE ?)
+     WHERE p.id_medicamento_hs IS NOT NULL
+       AND p.sku IS NOT NULL AND p.sku != ''
+       AND p.nombre_comercial IS NOT NULL AND p.nombre_comercial != ''
+       AND (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.principio_activo LIKE ? OR p.codigo_barras LIKE ?)
      ORDER BY p.nombre_comercial ASC`,
     [env.PUBLIC_UPLOAD_BASE_URL, search, wildcard, wildcard, wildcard, wildcard]
   );
@@ -184,6 +197,14 @@ export async function listProductImages(idProduct) {
 export async function getProductById(id) {
   const product = await ensureProductExists(id);
 
+  const [ffRow] = product.id_forma
+    ? await query(
+        `SELECT nombre AS forma_farmaceutica FROM formas_farmaceuticas WHERE id_forma = ?`,
+        [product.id_forma]
+      )
+    : [{}];
+  product.forma_farmaceutica = ffRow?.forma_farmaceutica ?? '';
+
   const [stockSummary] = await query(
     `SELECT ROUND(COALESCE(SUM(e.cantidad_disponible), 0), 3) AS stock_total,
             ROUND(COALESCE(SUM(e.cantidad_cuarentena), 0), 3) AS stock_cuarentena,
@@ -218,7 +239,13 @@ export async function getProductById(id) {
 
   const labRows = product.id_laboratorio
     ? await query(
-        `SELECT id_laboratorio, nombre, pais, contacto, telefono, email FROM laboratorios WHERE id_laboratorio = ?`,
+        `SELECT id_proveedor AS id_laboratorio,
+                COALESCE(razon_social, nombre) AS nombre,
+                ciudad AS pais,
+                nombres AS contacto,
+                telefono,
+                email
+           FROM proveedores WHERE id_proveedor = ?`,
         [product.id_laboratorio]
       )
     : [];
@@ -238,18 +265,24 @@ export async function getProductById(id) {
 export async function createProduct(payload) {
   const result = await query(
     `INSERT INTO productos (
-      sku, codigo_barras, nombre_comercial, principio_activo, concentracion, unidad_medida,
+      id_medicamento_hs, sku, codigo_barras, nombre_comercial, principio_activo, concentracion, presentacion,
+      unidad_medida, registro_invima, cum, consecutivo_cum,
       id_categoria, id_forma, codigo_atc, id_laboratorio, tipo_producto, requiere_receta,
       es_controlado, requiere_cadena_frio, temp_min, temp_max, iva_tasa, costo_referencia,
       precio_venta, stock_minimo, stock_maximo, punto_reorden, activo
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
+      payload.id_medicamento_hs ?? null,
       payload.sku,
       payload.codigo_barras ?? null,
       payload.nombre_comercial,
       payload.principio_activo ?? null,
       payload.concentracion ?? null,
+      payload.presentacion ?? null,
       payload.unidad_medida ?? 'UND',
+      payload.registro_invima ?? null,
+      payload.cum ?? null,
+      payload.consecutivo_cum ?? null,
       payload.id_categoria ?? null,
       payload.id_forma ?? null,
       payload.codigo_atc ?? null,
@@ -279,11 +312,16 @@ export async function updateProduct(id, payload) {
 
   await query(
     `UPDATE productos SET
+      id_medicamento_hs = ?,
       codigo_barras = ?,
       nombre_comercial = ?,
       principio_activo = ?,
       concentracion = ?,
+      presentacion = ?,
       unidad_medida = ?,
+      registro_invima = ?,
+      cum = ?,
+      consecutivo_cum = ?,
       id_categoria = ?,
       id_forma = ?,
       codigo_atc = ?,
@@ -303,11 +341,16 @@ export async function updateProduct(id, payload) {
       activo = ?
     WHERE id_producto = ?`,
     [
+      merged.id_medicamento_hs ?? null,
       merged.codigo_barras,
       merged.nombre_comercial,
       merged.principio_activo,
       merged.concentracion,
+      merged.presentacion ?? null,
       merged.unidad_medida,
+      merged.registro_invima ?? null,
+      merged.cum ?? null,
+      merged.consecutivo_cum ?? null,
       merged.id_categoria,
       merged.id_forma,
       merged.codigo_atc,

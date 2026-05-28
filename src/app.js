@@ -31,6 +31,7 @@ import { signaturesRouter } from './routes/signatures.routes.js';
 import { multisiteRouter } from './routes/multisite.routes.js';
 import { pacientesRouter } from './routes/pacientes.routes.js';
 import { providersRouter } from './routes/providers.routes.js';
+import { medicamentosHsRouter } from './routes/medicamentos-hs.routes.js';
 import { requestTraceMiddleware } from './middleware/request-trace.js';
 import { errorHandler } from './middleware/error-handler.js';
 
@@ -138,6 +139,7 @@ app.use('/api/signatures', signaturesRouter);
 app.use('/api/multisite', multisiteRouter);
 app.use('/api/pacientes', pacientesRouter);
 app.use('/api/providers', providersRouter);
+app.use('/api/medicamentos-hs', medicamentosHsRouter);
 app.use('/', monitoringRouter);
 
 app.use((_req, res) => {

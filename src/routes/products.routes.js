@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authRequired } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/async-handler.js';
+import { query } from '../config/db.js';
 import {
   listProducts,
   createProduct,
@@ -20,7 +21,11 @@ const productSchema = z.object({
   nombre_comercial: z.string().min(2),
   principio_activo: z.string().optional().nullable(),
   concentracion: z.string().optional().nullable(),
+  presentacion: z.string().optional().nullable(),
   unidad_medida: z.string().optional(),
+  registro_invima: z.string().optional().nullable(),
+  cum: z.number().int().optional().nullable(),
+  consecutivo_cum: z.number().int().optional().nullable(),
   id_categoria: z.number().int().optional().nullable(),
   id_forma: z.number().int().optional().nullable(),
   codigo_atc: z.string().optional().nullable(),
@@ -37,7 +42,8 @@ const productSchema = z.object({
   stock_minimo: z.number().optional(),
   stock_maximo: z.number().optional(),
   punto_reorden: z.number().optional(),
-  activo: z.boolean().optional()
+  activo: z.boolean().optional(),
+  id_medicamento_hs: z.number().int().optional().nullable()
 });
 
 const productMediaSchema = z.object({
@@ -54,8 +60,11 @@ productsRouter.get(
   '/lookups',
   authRequired,
   asyncHandler(async (_req, res) => {
-    const laboratorios = await listLaboratorios();
-    res.json({ success: true, data: { laboratorios } });
+    const [laboratorios, formas] = await Promise.all([
+      listLaboratorios(),
+      query('SELECT id_forma, nombre FROM formas_farmaceuticas ORDER BY nombre ASC')
+    ]);
+    res.json({ success: true, data: { laboratorios, formas } });
   })
 );
 
