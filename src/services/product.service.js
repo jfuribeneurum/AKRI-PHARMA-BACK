@@ -73,15 +73,10 @@ async function ensureProductExists(id) {
 
 export async function listLaboratorios() {
   return query(
-    `SELECT id_proveedor AS id_laboratorio,
-            COALESCE(razon_social, nombre) AS nombre,
-            ciudad AS pais,
-            nombres AS contacto,
-            telefono,
-            email
-       FROM proveedores
+    `SELECT id_laboratorio, nombre, pais, contacto, telefono, email
+       FROM laboratorios
       WHERE activo = TRUE
-      ORDER BY COALESCE(razon_social, nombre) ASC`
+      ORDER BY nombre ASC`
   );
 }
 
@@ -106,7 +101,7 @@ export async function listProducts(search = '') {
         COALESCE(stock.stock_actual, 0) AS stock_actual,
         ff.nombre AS forma_farmaceutica,
         cp.nombre AS categoria,
-        COALESCE(lab.razon_social, lab.nombre) AS laboratorio_nombre,
+        lab.nombre AS laboratorio_nombre,
         (
           SELECT CONCAT(?, '/', pi.url_relativa)
           FROM productos_imagenes pi
@@ -117,15 +112,14 @@ export async function listProducts(search = '') {
      FROM productos p
      LEFT JOIN formas_farmaceuticas ff ON ff.id_forma = p.id_forma
      LEFT JOIN categorias_producto cp ON cp.id_categoria = p.id_categoria
-     LEFT JOIN proveedores lab ON lab.id_proveedor = p.id_laboratorio
+     LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
      LEFT JOIN (
         SELECT l.id_producto, ROUND(COALESCE(SUM(e.cantidad_disponible), 0), 3) AS stock_actual
         FROM lotes l
         LEFT JOIN existencias e ON e.id_lote = l.id_lote
         GROUP BY l.id_producto
      ) stock ON stock.id_producto = p.id_producto
-     WHERE p.id_medicamento_hs IS NOT NULL
-       AND p.sku IS NOT NULL AND p.sku != ''
+     WHERE p.sku IS NOT NULL AND p.sku != ''
        AND p.nombre_comercial IS NOT NULL AND p.nombre_comercial != ''
        AND (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.principio_activo LIKE ? OR p.codigo_barras LIKE ?)
      ORDER BY p.nombre_comercial ASC`,
@@ -239,13 +233,8 @@ export async function getProductById(id) {
 
   const labRows = product.id_laboratorio
     ? await query(
-        `SELECT id_proveedor AS id_laboratorio,
-                COALESCE(razon_social, nombre) AS nombre,
-                ciudad AS pais,
-                nombres AS contacto,
-                telefono,
-                email
-           FROM proveedores WHERE id_proveedor = ?`,
+        `SELECT id_laboratorio, nombre, pais, contacto, telefono, email
+           FROM laboratorios WHERE id_laboratorio = ?`,
         [product.id_laboratorio]
       )
     : [];
