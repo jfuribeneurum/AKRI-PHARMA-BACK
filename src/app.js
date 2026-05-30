@@ -36,6 +36,7 @@ import { providersRouter } from './routes/providers.routes.js';
 import { medicamentosHsRouter } from './routes/medicamentos-hs.routes.js';
 import { formulacionHsRouter } from './routes/formulacion-hs.routes.js';
 import { dispensacionHsRouter } from './routes/dispensacion-hs.routes.js';
+import { ciudadesRouter } from './routes/ciudades.routes.js';
 import { requestTraceMiddleware } from './middleware/request-trace.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { logger } from './utils/logger.js';
@@ -171,6 +172,7 @@ app.use('/api/providers', providersRouter);
 app.use('/api/medicamentos-hs', medicamentosHsRouter);
 app.use('/api/formulaciones-hs', formulacionHsRouter);
 app.use('/api/dispensacion-hs', dispensacionHsRouter);
+app.use('/api/ciudades', ciudadesRouter);
 app.use('/', monitoringRouter);
 
 app.use((_req, res) => {

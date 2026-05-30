@@ -25,6 +25,7 @@ const providerSchema = z.object({
   telefono: z.string().optional().nullable(),
   email: z.string().email().optional().nullable(),
   ciudad: z.string().optional().nullable(),
+  departamento: z.string().optional().nullable(),
   direccion: z.string().optional().nullable(),
   activo: z.boolean().optional()
 });

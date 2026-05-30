@@ -8,28 +8,56 @@ export const formulacionHsRouter = Router();
 
 formulacionHsRouter.use(authRequired);
 
-// GET /formulaciones-hs?search=&page=&limit=
+const VALID_ESTADOS = new Set(['pendiente', 'parcial', 'dispensado']);
+
+// Replica exacta de getResumenLabel del frontend para filtrar en el backend
+function computeEstado(f) {
+  const c = f.control;
+  if (!c || (Number(c.dispensados) === 0 && Number(c.parciales) === 0)) return 'pendiente';
+  if (Number(c.dispensados) >= Number(f.total_medicamentos)) return 'dispensado';
+  return 'parcial';
+}
+
+// GET /formulaciones-hs?search=&page=&limit=&estado=&fechaDesde=&fechaHasta=
 formulacionHsRouter.get('/', asyncHandler(async (req, res) => {
   const search     = String(req.query.search ?? '').trim();
   const page       = Math.max(1, Number(req.query.page ?? 1));
   const limit      = Math.min(100, Math.max(5, Number(req.query.limit ?? 30)));
   const fechaDesde = String(req.query.fechaDesde ?? '').trim();
   const fechaHasta = String(req.query.fechaHasta ?? '').trim();
+  const estado     = VALID_ESTADOS.has(String(req.query.estado ?? '').trim())
+    ? String(req.query.estado).trim()
+    : '';
 
-  const result = await listFormulacionesHS({ search, page, limit, fechaDesde, fechaHasta });
+  // Cuando hay filtro de estado, traemos todo el conjunto (sin paginación HS)
+  // porque el estado vive en la BD local y hay que calcular cuántas quedan después de filtrar.
+  const hsLimit  = estado ? 2000 : limit;
+  const hsPage   = estado ? 1    : page;
 
-  // Enriquecer con estado de control de dispensación
-  if (result.data.length) {
-    const ids = result.data.map(r => r.id_formulacion);
+  const result = await listFormulacionesHS({ search, page: hsPage, limit: hsLimit, fechaDesde, fechaHasta });
+
+  // Enriquecer con estado de control de dispensación (BD local)
+  let enriched = result.data;
+  if (enriched.length) {
+    const ids = enriched.map(r => r.id_formulacion);
     const statusRows = await getControlStatusBatch(ids);
     const statusMap = Object.fromEntries(statusRows.map(s => [s.id_formulacion_hs, s]));
-    result.data = result.data.map(f => ({
+    enriched = enriched.map(f => ({
       ...f,
       control: statusMap[f.id_formulacion] ?? null
     }));
   }
 
-  res.json({ success: true, ...result });
+  // Filtrar por estado y paginar en memoria
+  if (estado) {
+    enriched = enriched.filter(f => computeEstado(f) === estado);
+    const total  = enriched.length;
+    const offset = (page - 1) * limit;
+    const data   = enriched.slice(offset, offset + limit);
+    return res.json({ success: true, data, total, page, limit });
+  }
+
+  res.json({ success: true, data: enriched, total: result.total, page, limit });
 }));
 
 // GET /formulaciones-hs/:id
