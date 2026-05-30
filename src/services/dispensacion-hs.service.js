@@ -96,6 +96,25 @@ export async function dispensarMedicamento(payload, userId) {
     : String(formulacion.fechaFormulacion ?? '').slice(0, 10);
 
   if (existing.length) {
+    const [current] = await query(
+      `SELECT cantidad_formulada, cantidad_dispensada FROM dispensacion_hs_control WHERE id = ?`,
+      [existing[0].id]
+    );
+    const yaDispensado  = Number(current.cantidad_dispensada);
+    const formulado     = Number(current.cantidad_formulada);
+    const restante      = formulado - yaDispensado;
+
+    if (cantidadDispensada > restante) {
+      throw new HttpError(400,
+        `Solo quedan ${restante} unidad(es) por dispensar de las ${formulado} formuladas. No se puede superar esa cantidad.`
+      );
+    }
+
+    const nuevoTotal = yaDispensado + cantidadDispensada;
+    let nuevoEstado  = 'parcial';
+    if (nuevoTotal >= formulado) nuevoEstado = 'dispensado';
+    if (nuevoTotal === 0)        nuevoEstado = 'pendiente';
+
     await query(
       `UPDATE dispensacion_hs_control
           SET cantidad_dispensada = ?,
@@ -103,12 +122,19 @@ export async function dispensarMedicamento(payload, userId) {
               fecha_dispensacion = NOW(),
               id_usuario = ?,
               id_producto = ?,
-              observaciones = ?
+              observaciones = CONCAT(COALESCE(observaciones,''), IF(? != '', CONCAT(IF(observaciones IS NOT NULL AND observaciones != '', ' | ', ''), ?), ''))
         WHERE id = ?`,
-      [cantidadDispensada, estado, userId ?? null, payload.id_producto ?? null, payload.observaciones ?? null, existing[0].id]
+      [nuevoTotal, nuevoEstado, userId ?? null, payload.id_producto ?? null,
+       payload.observaciones ?? '', payload.observaciones ?? '', existing[0].id]
     );
     const [updated] = await query(`SELECT * FROM dispensacion_hs_control WHERE id = ?`, [existing[0].id]);
     return updated;
+  }
+
+  if (cantidadDispensada > cantidadFormulada) {
+    throw new HttpError(400,
+      `No se puede dispensar ${cantidadDispensada} unidades. La cantidad formulada es ${cantidadFormulada}.`
+    );
   }
 
   const result = await query(

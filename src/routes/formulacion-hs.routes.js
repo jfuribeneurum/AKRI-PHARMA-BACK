@@ -10,11 +10,13 @@ formulacionHsRouter.use(authRequired);
 
 // GET /formulaciones-hs?search=&page=&limit=
 formulacionHsRouter.get('/', asyncHandler(async (req, res) => {
-  const search = String(req.query.search ?? '').trim();
-  const page   = Math.max(1, Number(req.query.page ?? 1));
-  const limit  = Math.min(100, Math.max(5, Number(req.query.limit ?? 30)));
+  const search     = String(req.query.search ?? '').trim();
+  const page       = Math.max(1, Number(req.query.page ?? 1));
+  const limit      = Math.min(100, Math.max(5, Number(req.query.limit ?? 30)));
+  const fechaDesde = String(req.query.fechaDesde ?? '').trim();
+  const fechaHasta = String(req.query.fechaHasta ?? '').trim();
 
-  const result = await listFormulacionesHS({ search, page, limit });
+  const result = await listFormulacionesHS({ search, page, limit, fechaDesde, fechaHasta });
 
   // Enriquecer con estado de control de dispensación
   if (result.data.length) {

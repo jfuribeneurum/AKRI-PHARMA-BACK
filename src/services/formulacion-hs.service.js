@@ -11,15 +11,28 @@ async function hsQuery(sql, params = []) {
   }
 }
 
-export async function listFormulacionesHS({ search = '', page = 1, limit = 30 } = {}) {
-  const offset  = (Math.max(1, page) - 1) * limit;
-  const wild    = `%${search.trim()}%`;
+export async function listFormulacionesHS({ search = '', page = 1, limit = 30, fechaDesde = '', fechaHasta = '' } = {}) {
+  const offset    = (Math.max(1, page) - 1) * limit;
+  const wild      = `%${search.trim()}%`;
   const hasSearch = search.trim() !== '';
 
-  const searchClause = hasSearch
-    ? `AND (p.documento LIKE ? OR p.primer_nombre LIKE ? OR p.primer_apellido LIKE ? OR p.segundo_apellido LIKE ?)`
-    : '';
-  const searchParams = hasSearch ? [wild, wild, wild, wild] : [];
+  const conditions = [`f.tipo = 'medicine'`];
+  const params     = [];
+
+  if (hasSearch) {
+    conditions.push(`(p.documento LIKE ? OR p.primer_nombre LIKE ? OR p.primer_apellido LIKE ? OR p.segundo_apellido LIKE ?)`);
+    params.push(wild, wild, wild, wild);
+  }
+  if (fechaDesde) {
+    conditions.push(`f.fechaFormulacion >= ?`);
+    params.push(fechaDesde);
+  }
+  if (fechaHasta) {
+    conditions.push(`f.fechaFormulacion <= ?`);
+    params.push(fechaHasta);
+  }
+
+  const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
   const rows = await hsQuery(
     `SELECT
@@ -41,21 +54,19 @@ export async function listFormulacionesHS({ search = '', page = 1, limit = 30 } 
      FROM suhc_new_tbl_formulacion f
      INNER JOIN tblpaciente p ON p.id = f.idPaciente
      LEFT JOIN suhc_new_tbl_formulacion_medicamentos fm ON fm.idFormulacion = f.Id
-     WHERE f.tipo = 'medicine'
-       ${searchClause}
+     ${whereClause}
      GROUP BY f.Id
      ORDER BY f.fechaFormulacion DESC
      LIMIT ? OFFSET ?`,
-    [...searchParams, limit, offset]
+    [...params, limit, offset]
   );
 
   const [countRow] = await hsQuery(
     `SELECT COUNT(DISTINCT f.Id) AS total
        FROM suhc_new_tbl_formulacion f
        INNER JOIN tblpaciente p ON p.id = f.idPaciente
-       WHERE f.tipo = 'medicine'
-       ${searchClause}`,
-    searchParams
+       ${whereClause}`,
+    params
   );
 
   return {
