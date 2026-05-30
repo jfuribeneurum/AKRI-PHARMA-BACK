@@ -1,7 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import morgan from 'morgan';
+import pinoHttp from 'pino-http';
+import compression from 'compression';
+import { rateLimit } from 'express-rate-limit';
 import swaggerUi from 'swagger-ui-express';
 import YAML from 'yamljs';
 import path from 'node:path';
@@ -36,6 +38,7 @@ import { formulacionHsRouter } from './routes/formulacion-hs.routes.js';
 import { dispensacionHsRouter } from './routes/dispensacion-hs.routes.js';
 import { requestTraceMiddleware } from './middleware/request-trace.js';
 import { errorHandler } from './middleware/error-handler.js';
+import { logger } from './utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,9 +60,30 @@ app.use(cors({
   origin: env.CORS_ORIGIN.length > 0 ? env.CORS_ORIGIN : true,
   credentials: true
 }));
+app.use(compression());
 app.use(express.json({ limit: `${env.MAX_IMAGE_SIZE_MB + 4}mb` }));
 app.use(express.urlencoded({ extended: true, limit: `${env.MAX_IMAGE_SIZE_MB + 4}mb` }));
 app.use(requestTraceMiddleware);
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 500,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  skip: (req) => req.path === '/healthz' || req.path === '/api/health' || req.path === '/api/ready',
+  message: { success: false, message: 'Demasiadas solicitudes, intenta de nuevo en unos minutos.' }
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { success: false, message: 'Demasiados intentos de acceso, espera 15 minutos.' }
+});
+
+app.use('/api', apiLimiter);
+app.use('/api/auth/login', authLimiter);
 
 app.get('/healthz', (_req, res) => {
   res.type('text/plain').send('ok');
@@ -88,7 +112,10 @@ app.get('/api', (_req, res) => {
   });
 });
 
-app.use(morgan('dev', { skip: (req) => req.path === '/api/health' || req.path === '/api/ready' || req.path === '/healthz' }));
+app.use(pinoHttp({
+  logger,
+  autoLogging: { ignore: (req) => ['/api/health', '/api/ready', '/healthz'].includes(req.url ?? '') }
+}));
 
 app.get('/api/health', (_req, res) => {
   res.json({

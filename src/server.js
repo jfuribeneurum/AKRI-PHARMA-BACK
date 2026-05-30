@@ -3,6 +3,7 @@ import { env } from './config/env.js';
 import { pool } from './config/db.js';
 import { startColdChainAutoPolling } from './services/cold-chain-autopoll.service.js';
 import { ensureRuntimeSchema } from './services/runtime-schema.service.js';
+import { logger } from './utils/logger.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -19,7 +20,7 @@ async function waitForDatabase() {
       await connection.ping();
       await connection.query('SELECT 1 AS ok');
       connection.release();
-      console.log(`[startup] MariaDB disponible en ${env.DB_HOST}:${env.DB_PORT} (intento ${attempt}/${env.DB_STARTUP_MAX_ATTEMPTS})`);
+      logger.info({ attempt, host: env.DB_HOST, port: env.DB_PORT }, 'MariaDB disponible');
       return;
     } catch (error) {
       if (connection) {
@@ -27,9 +28,7 @@ async function waitForDatabase() {
       }
 
       lastError = error;
-      console.error(
-        `[startup] Esperando MariaDB (${attempt}/${env.DB_STARTUP_MAX_ATTEMPTS}): ${error.message}`
-      );
+      logger.warn({ attempt, max: env.DB_STARTUP_MAX_ATTEMPTS, err: error.message }, 'Esperando MariaDB');
 
       if (attempt < env.DB_STARTUP_MAX_ATTEMPTS) {
         await sleep(Math.max(250, env.DB_STARTUP_DELAY_MS));
@@ -61,7 +60,7 @@ async function startServer(port, maxRetries = 10) {
         throw error;
       }
 
-      console.warn(`[startup] Puerto ${attemptPort} ocupado${attempt < maxRetries - 1 ? ', intentando siguiente puerto' : ''}`);
+      logger.warn({ port: attemptPort }, attempt < maxRetries - 1 ? 'Puerto ocupado, intentando siguiente' : 'Puerto ocupado');
       attemptPort += 1;
     }
   }
@@ -75,10 +74,10 @@ async function start() {
     await ensureRuntimeSchema();
 
     const activePort = await startServer(env.PORT);
-    console.log(`AkriPharmacy backend escuchando en puerto ${activePort}`);
+    logger.info({ port: activePort }, 'AkriPharmacy backend listo');
     startColdChainAutoPolling();
   } catch (error) {
-    console.error('[startup] Error fatal al iniciar el backend:', error.message);
+    logger.fatal({ err: error.message }, 'Error fatal al iniciar el backend');
     process.exit(1);
   }
 }
