@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import { asyncHandler } from '../utils/async-handler.js';
 import { validate } from '../middleware/validate.js';
+import { authRequired } from '../middleware/auth.js';
 import { z } from 'zod';
 import { pool } from '../config/db.js';
 
 const router = Router();
+router.use(authRequired);
 
 const ingresoSchema = z.object({
   referencia: z.string().min(1, 'Referencia requerida'),
@@ -57,7 +59,7 @@ function parsearMetaIngreso(texto) {
 // ──────────────────────────────────────────────
 // Actualización de inventario
 // ──────────────────────────────────────────────
-async function actualizarInventario(connection, productoTexto, referencia, ingresoId, esDevolucion) {
+async function actualizarInventario(connection, productoTexto, referencia, ingresoId, esDevolucion, userId = null) {
   const items = parsearItemsIngreso(productoTexto);
   if (!items.length) return;
 
@@ -164,12 +166,12 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
       await connection.query(
         `INSERT INTO movimientos_inventario
            (tipo, id_producto, id_lote, id_almacen_origen, id_ubicacion_origen,
-            cantidad, costo_unitario, motivo, referencia_tipo, referencia_id)
-         VALUES ('devolucion_compra', ?, ?, ?, ?, ?, ?, ?, 'ingreso_sebas', ?)`,
+            cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, id_usuario)
+         VALUES ('devolucion_compra', ?, ?, ?, ?, ?, ?, ?, 'ingreso_sebas', ?, ?)`,
         [producto.id_producto, lote.id_lote,
          almacen.id_almacen, ubicacion.id_ubicacion,
          cantidad, costoUnitario,
-         `Devolución: ${referencia}`, ingresoId]
+         `Devolución: ${referencia}`, ingresoId, userId]
       );
     } else {
       // Entrada → sumar al inventario
@@ -190,12 +192,12 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
       await connection.query(
         `INSERT INTO movimientos_inventario
            (tipo, id_producto, id_lote, id_almacen_destino, id_ubicacion_destino,
-            cantidad, costo_unitario, motivo, referencia_tipo, referencia_id)
-         VALUES ('entrada_compra', ?, ?, ?, ?, ?, ?, ?, 'ingreso_sebas', ?)`,
+            cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, id_usuario)
+         VALUES ('entrada_compra', ?, ?, ?, ?, ?, ?, ?, 'ingreso_sebas', ?, ?)`,
         [producto.id_producto, lote.id_lote,
          almacen.id_almacen, ubicacion.id_ubicacion,
          cantidad, costoUnitario,
-         `Ingreso Sebas: ${referencia}`, ingresoId]
+         `Ingreso Sebas: ${referencia}`, ingresoId, userId]
       );
     }
   }
@@ -209,18 +211,21 @@ router.get('/', asyncHandler(async (req, res) => {
   try {
     const [ingresos] = await connection.query(`
       SELECT
-        id_ingreso,
-        referencia,
-        producto,
-        cantidad,
-        lote,
-        fecha_vencimiento,
-        estado,
-        fecha_ingreso,
-        created_at,
-        updated_at
-      FROM ingresos
-      ORDER BY created_at DESC
+        i.id_ingreso,
+        i.referencia,
+        i.producto,
+        i.cantidad,
+        i.lote,
+        i.fecha_vencimiento,
+        i.estado,
+        i.fecha_ingreso,
+        i.created_at,
+        i.updated_at,
+        i.creado_por,
+        u.nombre_completo AS creado_por_nombre
+      FROM ingresos i
+      LEFT JOIN usuarios u ON u.id_usuario = i.creado_por
+      ORDER BY i.created_at DESC
     `);
 
     res.json({
@@ -242,9 +247,9 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
 
     const [result] = await connection.query(`
       INSERT INTO ingresos
-        (referencia, producto, cantidad, lote, fecha_vencimiento, estado, fecha_ingreso)
-      VALUES (?, ?, ?, ?, ?, ?, NOW())
-    `, [referencia, producto, cantidad, lote || null, fecha_vencimiento || null, estado]);
+        (referencia, producto, cantidad, lote, fecha_vencimiento, estado, fecha_ingreso, creado_por)
+      VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)
+    `, [referencia, producto, cantidad, lote || null, fecha_vencimiento || null, estado, req.user?.sub ?? null]);
 
     const ingresoId = result.insertId;
     const esDevolucion = referencia.startsWith('DEV-');
@@ -257,7 +262,7 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
 
     if (debeActualizar) {
       try {
-        await actualizarInventario(connection, producto, referencia, ingresoId, esDevolucion);
+        await actualizarInventario(connection, producto, referencia, ingresoId, esDevolucion, req.user?.sub ?? null);
       } catch (invErr) {
         console.error('[ingresos] Error actualizando inventario:', invErr.message);
       }

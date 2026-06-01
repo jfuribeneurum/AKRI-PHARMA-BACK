@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { asyncHandler } from '../utils/async-handler.js';
+import { authRequired } from '../middleware/auth.js';
 import { hsPool } from '../config/hs-db.js';
 
 const router = Router();
+router.use(authRequired);
 
 const TABLA = 'tblpaciente';
 
