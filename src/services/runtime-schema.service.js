@@ -687,6 +687,49 @@ async function ensureV19PurchaseRequestSchema() {
   `);
 }
 
+async function ensureIngresosSchema() {
+  const hasUsuarios = await tableExists('usuarios');
+
+  if (!(await tableExists('ingresos'))) {
+    await runStatement(`
+      CREATE TABLE IF NOT EXISTS ingresos (
+        id_ingreso        INT AUTO_INCREMENT PRIMARY KEY,
+        referencia        VARCHAR(120) NOT NULL,
+        producto          LONGTEXT NOT NULL,
+        cantidad          DECIMAL(12,3) NOT NULL DEFAULT 0,
+        lote              VARCHAR(80) NULL,
+        fecha_vencimiento DATE NULL,
+        estado            ENUM('pendiente','recibido','almacenado','cancelado') NOT NULL DEFAULT 'pendiente',
+        fecha_ingreso     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        creado_por        INT NULL,
+        created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_ingresos_referencia  (referencia),
+        INDEX idx_ingresos_estado      (estado),
+        INDEX idx_ingresos_fecha       (fecha_ingreso),
+        INDEX idx_ingresos_creado_por  (creado_por)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Ingresos Sebas: recepciones de mercancía y devoluciones'
+    `);
+    console.log('[schema] Tabla ingresos creada en runtime');
+  }
+
+  if (hasUsuarios && !(await columnExists('ingresos', 'creado_por'))) {
+    await runStatement(`ALTER TABLE ingresos ADD COLUMN creado_por INT NULL AFTER fecha_ingreso`);
+  }
+
+  if (hasUsuarios && !(await constraintExists('ingresos', 'fk_ingresos_creado_por'))) {
+    await tryStep('fk_ingresos_creado_por', () =>
+      runStatement(`
+        ALTER TABLE ingresos
+          ADD CONSTRAINT fk_ingresos_creado_por
+            FOREIGN KEY (creado_por) REFERENCES usuarios(id_usuario)
+            ON DELETE SET NULL ON UPDATE CASCADE
+      `)
+    );
+  }
+}
+
 async function runEnsureRuntimeSchema() {
   console.log('[schema] verificando compatibilidad de esquema en runtime');
 
@@ -700,6 +743,7 @@ async function runEnsureRuntimeSchema() {
   await tryStep('v19_role_usabilities', ensureV19RoleUsabilities);
   await tryStep('v20_role_usabilities', ensureV20RoleUsabilities);
   await tryStep('v19_purchase_requests', ensureV19PurchaseRequestSchema);
+  await tryStep('ingresos_sebas', ensureIngresosSchema);
 
   console.log('[schema] verificación de compatibilidad completada');
 }
