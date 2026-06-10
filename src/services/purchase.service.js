@@ -81,13 +81,15 @@ export async function createPurchaseOrder(payload, user) {
     for (const item of payload.items) {
       await connection.execute(
         `INSERT INTO ordenes_compra_detalle (
-          id_oc, id_producto, cantidad, precio_unitario, descuento, impuesto, fecha_requerida
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          id_oc, id_producto, cantidad, precio_unitario, precio_venta, costo_referencia, descuento, impuesto, fecha_requerida
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           headerResult.insertId,
           item.id_producto,
           item.cantidad,
           item.precio_unitario,
+          item.precio_venta ?? 0,
+          item.costo_referencia ?? 0,
           item.descuento ?? 0,
           item.impuesto ?? 0,
           item.fecha_requerida ?? null
@@ -157,6 +159,13 @@ export async function receivePurchaseOrder(idOc, payload, user) {
       throw new HttpError(400, 'El almacén no tiene ubicaciones configuradas');
     }
 
+    // Leer precio_venta y costo_referencia definidos en la orden de compra
+    const [ocDetailRows] = await connection.execute(
+      `SELECT id_producto, precio_venta, costo_referencia FROM ordenes_compra_detalle WHERE id_oc = ?`,
+      [idOc]
+    );
+    const pricesByProduct = new Map(ocDetailRows.map(r => [Number(r.id_producto), r]));
+
     for (const item of payload.items) {
       const [productRows] = await connection.execute(
         `SELECT * FROM productos WHERE id_producto = ?`,
@@ -168,6 +177,8 @@ export async function receivePurchaseOrder(idOc, payload, user) {
         throw new HttpError(404, `Producto ${item.id_producto} no encontrado`);
       }
 
+      const prices = pricesByProduct.get(Number(item.id_producto)) ?? { precio_venta: 0, costo_referencia: 0 };
+
       const [loteRows] = await connection.execute(
         `SELECT * FROM lotes WHERE id_producto = ? AND numero_lote = ? FOR UPDATE`,
         [item.id_producto, item.numero_lote]
@@ -177,6 +188,13 @@ export async function receivePurchaseOrder(idOc, payload, user) {
 
       if (loteRows[0]) {
         loteId = loteRows[0].id_lote;
+        // Actualizar precio_venta del lote existente si viene de la OC
+        if (prices.precio_venta) {
+          await connection.execute(
+            `UPDATE lotes SET precio_venta = ? WHERE id_lote = ?`,
+            [prices.precio_venta, loteId]
+          );
+        }
       } else {
         const [loteResult] = await connection.execute(
           `INSERT INTO lotes (
@@ -188,10 +206,18 @@ export async function receivePurchaseOrder(idOc, payload, user) {
             item.numero_lote,
             item.fecha_vencimiento,
             item.costo_unitario,
-            product.precio_venta
+            prices.precio_venta
           ]
         );
         loteId = loteResult.insertId;
+      }
+
+      // Actualizar precio_venta y costo_referencia en el catálogo del producto
+      if (prices.precio_venta || prices.costo_referencia) {
+        await connection.execute(
+          `UPDATE productos SET precio_venta = ?, costo_referencia = ? WHERE id_producto = ?`,
+          [prices.precio_venta, prices.costo_referencia, item.id_producto]
+        );
       }
 
       const [existenciaRows] = await connection.execute(

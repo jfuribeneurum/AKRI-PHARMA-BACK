@@ -9,6 +9,8 @@ const purchaseItemSchema = z.object({
   id_producto: z.number().int(),
   cantidad: z.number().positive(),
   precio_unitario: z.number().nonnegative(),
+  precio_venta: z.number().nonnegative().optional().default(0),
+  costo_referencia: z.number().nonnegative().optional().default(0),
   descuento: z.number().optional(),
   impuesto: z.number().optional(),
   fecha_requerida: z.string().optional().nullable()
