@@ -31,7 +31,7 @@ const productSchema = z.object({
   codigo_atc: z.string().optional().nullable(),
   id_laboratorio: z.number().int().optional().nullable(),
   tipo_producto: z.enum(['medicamento', 'insumo', 'controlado', 'vacuna', 'dispositivo', 'otro']).optional(),
-  requiere_receta: z.boolean().optional(),
+  mx_control: z.boolean().optional(),
   es_controlado: z.boolean().optional(),
   requiere_cadena_frio: z.boolean().optional(),
   temp_min: z.number().optional().nullable(),

@@ -33,10 +33,13 @@ medicamentosHsRouter.get(
                 m.ATC                AS atc,
                 m.principioActivo,
                 m.concentracion,
-                d.descripcion        AS forma_farmaceutica
+                d.descripcion        AS forma_farmaceutica,
+                u.descripcion        AS unidad_dosificacion
            FROM suhc_new_tbl_medicine m
            LEFT JOIN suhc_new_tbl_maestrasdetalle d
                   ON d.id = m.idFormaFarmaceutica AND d.idMaestra = 1
+           LEFT JOIN suhc_new_tbl_maestrasdetalle u
+                  ON u.id = m.idUnidadDosificacion
            ${whereClause}
            ORDER BY m.medicamento ASC
            LIMIT ?`,

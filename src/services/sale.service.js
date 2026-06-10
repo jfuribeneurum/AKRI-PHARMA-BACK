@@ -54,7 +54,7 @@ export async function createSale(payload, userId) {
         `SELECT
             l.*,
             p.id_producto,
-            p.requiere_receta,
+            p.mx_control,
             p.es_controlado,
             p.nombre_comercial,
             e.id_existencia,
@@ -75,7 +75,7 @@ export async function createSale(payload, userId) {
         throw new HttpError(404, `Lote ${item.id_lote} no encontrado`);
       }
 
-      if (lote.requiere_receta && !payload.id_receta) {
+      if (lote.mx_control && !payload.id_receta) {
         throw new HttpError(400, `El producto ${lote.nombre_comercial} requiere receta`);
       }
 
@@ -92,7 +92,7 @@ export async function createSale(payload, userId) {
 
       await connection.execute(
         `INSERT INTO ventas_detalle (
-          id_venta, id_producto, id_lote, cantidad, precio_unitario, impuesto, descuento, requiere_receta, validacion_controlado
+          id_venta, id_producto, id_lote, cantidad, precio_unitario, impuesto, descuento, mx_control, validacion_controlado
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           headerResult.insertId,
@@ -102,7 +102,7 @@ export async function createSale(payload, userId) {
           item.precio_unitario,
           item.impuesto ?? 0,
           item.descuento ?? 0,
-          lote.requiere_receta,
+          lote.mx_control,
           lote.es_controlado ? JSON.stringify({
             doble_verificacion: Boolean(item.doble_verificacion_por),
             doble_verificacion_por: item.doble_verificacion_por ?? null

@@ -25,7 +25,7 @@ async function getProductByBarcodeWithConnection(connection, barcode) {
         p.principio_activo,
         p.concentracion,
         p.tipo_producto,
-        p.requiere_receta,
+        p.mx_control,
         p.es_controlado,
         p.requiere_cadena_frio,
         p.costo_referencia,

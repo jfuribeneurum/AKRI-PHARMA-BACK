@@ -116,7 +116,7 @@ export async function listAvailableDispensingItems(search = '', siteId = null) {
         p.principio_activo,
         p.concentracion,
         p.tipo_producto,
-        p.requiere_receta,
+        p.mx_control,
         p.es_controlado,
         p.requiere_cadena_frio,
         p.temp_min,
@@ -315,7 +315,7 @@ export async function createDispensation(payload, userId) {
             p.tipo_producto,
             p.requiere_cadena_frio,
             p.es_controlado,
-            p.requiere_receta
+            p.mx_control
          FROM existencias e
          INNER JOIN lotes l ON l.id_lote = e.id_lote
          INNER JOIN productos p ON p.id_producto = l.id_producto

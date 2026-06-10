@@ -55,6 +55,11 @@ const SEED = [
   { grupo: 'genero',                   grupo_label: 'Género',                     valor: 'F',   etiqueta: 'Femenino',    orden: 1 },
   { grupo: 'genero',                   grupo_label: 'Género',                     valor: 'M',   etiqueta: 'Masculino',   orden: 2 },
   { grupo: 'genero',                   grupo_label: 'Género',                     valor: 'O',   etiqueta: 'Otro',        orden: 3 },
+
+  { grupo: 'clasificacion_producto',   grupo_label: 'Clasificación de Producto',  valor: 'RIESGO I',    etiqueta: 'RIESGO I',    orden: 1 },
+  { grupo: 'clasificacion_producto',   grupo_label: 'Clasificación de Producto',  valor: 'RIESGO IIa',  etiqueta: 'RIESGO IIa',  orden: 2 },
+  { grupo: 'clasificacion_producto',   grupo_label: 'Clasificación de Producto',  valor: 'RIESGO IIb',  etiqueta: 'RIESGO IIb',  orden: 3 },
+  { grupo: 'clasificacion_producto',   grupo_label: 'Clasificación de Producto',  valor: 'RIESGO III',  etiqueta: 'RIESGO III',  orden: 4 },
 ];
 
 export async function initParametrosTable() {
@@ -71,14 +76,11 @@ export async function initParametrosTable() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
-  const [{ cnt }] = await query(`SELECT COUNT(*) AS cnt FROM parametros_sistema`);
-  if (Number(cnt) === 0) {
-    for (const row of SEED) {
-      await query(
-        `INSERT IGNORE INTO parametros_sistema (grupo, grupo_label, valor, etiqueta, orden, activo) VALUES (?, ?, ?, ?, ?, 1)`,
-        [row.grupo, row.grupo_label, row.valor, row.etiqueta, row.orden]
-      );
-    }
+  for (const row of SEED) {
+    await query(
+      `INSERT IGNORE INTO parametros_sistema (grupo, grupo_label, valor, etiqueta, orden, activo) VALUES (?, ?, ?, ?, ?, 1)`,
+      [row.grupo, row.grupo_label, row.valor, row.etiqueta, row.orden]
+    );
   }
 }
 
