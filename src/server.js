@@ -3,6 +3,7 @@ import { env } from './config/env.js';
 import { pool } from './config/db.js';
 import { startColdChainAutoPolling } from './services/cold-chain-autopoll.service.js';
 import { ensureRuntimeSchema } from './services/runtime-schema.service.js';
+import { initParametrosTable } from './services/parametros.service.js';
 import { logger } from './utils/logger.js';
 
 function sleep(ms) {
@@ -72,6 +73,7 @@ async function start() {
   try {
     await waitForDatabase();
     await ensureRuntimeSchema();
+    await initParametrosTable();
 
     const activePort = await startServer(env.PORT);
     logger.info({ port: activePort }, 'AkriPharmacy backend listo');

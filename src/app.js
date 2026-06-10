@@ -38,6 +38,8 @@ import { formulacionHsRouter } from './routes/formulacion-hs.routes.js';
 import { dispensacionHsRouter } from './routes/dispensacion-hs.routes.js';
 import { ciudadesRouter } from './routes/ciudades.routes.js';
 import { trasladosRouter } from './routes/traslados.routes.js';
+import { parametrosRouter } from './routes/parametros.routes.js';
+import { initParametrosTable } from './services/parametros.service.js';
 import { requestTraceMiddleware } from './middleware/request-trace.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { logger } from './utils/logger.js';
@@ -175,6 +177,7 @@ app.use('/api/formulaciones-hs', formulacionHsRouter);
 app.use('/api/dispensacion-hs', dispensacionHsRouter);
 app.use('/api/ciudades', ciudadesRouter);
 app.use('/api/traslados', trasladosRouter);
+app.use('/api/parametros', parametrosRouter);
 app.use('/', monitoringRouter);
 
 app.use((_req, res) => {
