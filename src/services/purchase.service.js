@@ -57,9 +57,48 @@ export async function listPurchases(user = null) {
   );
 }
 
+function buildNextFromRow(row) {
+  if (!row) return 'OC-0000001';
+  const seq = parseInt(row.numero_oc.slice(3), 10);
+  return `OC-${String(seq + 1).padStart(7, '0')}`;
+}
+
+async function nextNumeroOC(connection) {
+  const [rows] = await connection.execute(
+    `SELECT numero_oc FROM ordenes_compra
+     WHERE numero_oc REGEXP '^OC-[0-9]+$'
+     ORDER BY CAST(SUBSTRING(numero_oc, 4) AS UNSIGNED) DESC
+     LIMIT 1
+     FOR UPDATE`
+  );
+  return buildNextFromRow(rows[0]);
+}
+
+export async function listWarehousesForPO() {
+  return query(
+    `SELECT a.id_almacen, a.codigo, a.nombre, a.tipo,
+            s.id_sede, s.nombre AS sede_nombre, s.ciudad AS sede_ciudad, s.direccion AS sede_direccion
+       FROM almacenes a
+       INNER JOIN sedes s ON s.id_sede = a.id_sede
+      WHERE a.activo = TRUE AND s.activo = TRUE
+      ORDER BY s.es_principal DESC, s.nombre ASC, a.es_principal DESC, a.nombre ASC`
+  );
+}
+
+export async function previewNextNumeroOC() {
+  const rows = await query(
+    `SELECT numero_oc FROM ordenes_compra
+     WHERE numero_oc REGEXP '^OC-[0-9]+$'
+     ORDER BY CAST(SUBSTRING(numero_oc, 4) AS UNSIGNED) DESC
+     LIMIT 1`
+  );
+  return buildNextFromRow(rows[0]);
+}
+
 export async function createPurchaseOrder(payload, user) {
   const site = await assertCentralPurchasing(user);
   return withTransaction(async (connection) => {
+    const numero_oc = await nextNumeroOC(connection);
     const totals = calculateTotals(payload.items);
     const [headerResult] = await connection.execute(
       `INSERT INTO ordenes_compra (
@@ -67,7 +106,7 @@ export async function createPurchaseOrder(payload, user) {
       ) VALUES (?, ?, CURRENT_DATE(), ?, ?, ?, ?, ?, ?, ?)`,
       [
         site.id_sede,
-        payload.numero_oc,
+        numero_oc,
         payload.id_proveedor,
         payload.estado ?? 'borrador',
         totals.subtotal,
@@ -105,7 +144,7 @@ export async function createPurchaseOrder(payload, user) {
       perfil_nombre: user?.role ?? null,
       referencia_tipo: 'ORDEN_COMPRA',
       referencia_id: headerResult.insertId,
-      descripcion: `OC ${payload.numero_oc} creada desde sede central`,
+      descripcion: `OC ${numero_oc} creada desde sede central`,
       payload_json: { items: payload.items.length, total: totals.total }
     });
 

@@ -80,6 +80,31 @@ export async function listLaboratorios() {
   );
 }
 
+export async function listAllProductsForPO() {
+  return query(
+    `SELECT p.id_producto, p.sku, p.codigo_control, p.codigo_barras, p.nombre_comercial, p.principio_activo,
+            p.concentracion, p.presentacion, p.costo_referencia, p.precio_venta,
+            p.id_laboratorio, lab.nombre AS laboratorio_nombre
+       FROM productos p
+       LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
+      WHERE p.activo = TRUE
+      ORDER BY p.nombre_comercial ASC`
+  );
+}
+
+export async function listProductsByLaboratorio(idLaboratorio) {
+  return query(
+    `SELECT p.id_producto, p.sku, p.codigo_barras, p.nombre_comercial, p.principio_activo,
+            p.concentracion, p.presentacion, p.costo_referencia, p.precio_venta,
+            lab.nombre AS laboratorio_nombre
+       FROM productos p
+       LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
+      WHERE p.id_laboratorio = ? AND p.activo = TRUE
+      ORDER BY p.nombre_comercial ASC`,
+    [idLaboratorio]
+  );
+}
+
 export async function listProducts(search = '') {
   const wildcard = `%${search}%`;
 
@@ -269,12 +294,12 @@ export async function getNextControlCode(sku, idLaboratorio, consecutivoCum) {
   const cumSuffix = lastCum ? `.${lastCum}` : '';
   const codigo_control = `${sku}-${labPart}${cumSuffix}`;
 
-  // Única restricción: mismo SKU + mismo consecutivo CUM
+  // Duplicado: mismo consecutivo_cum + mismo laboratorio
   let duplicate_cum = null;
   if (consecutivoCum != null && consecutivoCum !== '') {
     const dupCum = await query(
-      `SELECT codigo_control FROM productos WHERE sku = ? AND consecutivo_cum = ? LIMIT 1`,
-      [sku, consecutivoCum]
+      `SELECT codigo_control FROM productos WHERE consecutivo_cum = ? AND id_laboratorio <=> ? LIMIT 1`,
+      [consecutivoCum, idLaboratorio ?? null]
     );
     duplicate_cum = dupCum[0]?.codigo_control ?? null;
   }
@@ -283,16 +308,16 @@ export async function getNextControlCode(sku, idLaboratorio, consecutivoCum) {
 }
 
 export async function createProduct(payload, userId = null) {
-  // Única restricción: mismo SKU + mismo consecutivo CUM = duplicado
-  if (payload.sku && payload.consecutivo_cum != null) {
+  // Duplicado: mismo consecutivo_cum + mismo laboratorio
+  if (payload.consecutivo_cum != null) {
     const existing = await query(
-      `SELECT codigo_control FROM productos WHERE sku = ? AND consecutivo_cum = ? LIMIT 1`,
-      [payload.sku, payload.consecutivo_cum]
+      `SELECT codigo_control FROM productos WHERE consecutivo_cum = ? AND id_laboratorio <=> ? LIMIT 1`,
+      [payload.consecutivo_cum, payload.id_laboratorio ?? null]
     );
     if (existing[0]) {
       throw new HttpError(
         409,
-        `Ya existe "${existing[0].codigo_control}" con el consecutivo CUM "${payload.consecutivo_cum}". No se puede crear un duplicado.`
+        `Ya existe "${existing[0].codigo_control}" con el consecutivo CUM "${payload.consecutivo_cum}" para ese laboratorio. No se puede crear un duplicado.`
       );
     }
   }

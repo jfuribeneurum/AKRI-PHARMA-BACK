@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { authRequired } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/async-handler.js';
-import { listPurchases, createPurchaseOrder, receivePurchaseOrder } from '../services/purchase.service.js';
+import { listPurchases, createPurchaseOrder, receivePurchaseOrder, previewNextNumeroOC, listWarehousesForPO } from '../services/purchase.service.js';
 
 const purchaseItemSchema = z.object({
   id_producto: z.number().int(),
@@ -17,7 +17,7 @@ const purchaseItemSchema = z.object({
 });
 
 const purchaseSchema = z.object({
-  numero_oc: z.string().min(2),
+  numero_oc: z.string().optional(),
   id_proveedor: z.number().int(),
   estado: z.enum(['borrador', 'aprobada']).optional(),
   observaciones: z.string().optional().nullable(),
@@ -46,6 +46,24 @@ purchasesRouter.get(
   authRequired,
   asyncHandler(async (req, res) => {
     const data = await listPurchases(req.user);
+    res.json({ success: true, data });
+  })
+);
+
+purchasesRouter.get(
+  '/next-number',
+  authRequired,
+  asyncHandler(async (_req, res) => {
+    const numero_oc = await previewNextNumeroOC();
+    res.json({ success: true, data: { numero_oc } });
+  })
+);
+
+purchasesRouter.get(
+  '/warehouses',
+  authRequired,
+  asyncHandler(async (_req, res) => {
+    const data = await listWarehousesForPO();
     res.json({ success: true, data });
   })
 );

@@ -6,6 +6,8 @@ import { asyncHandler } from '../utils/async-handler.js';
 import { query } from '../config/db.js';
 import {
   listProducts,
+  listProductsByLaboratorio,
+  listAllProductsForPO,
   createProduct,
   updateProduct,
   getProductById,
@@ -102,6 +104,24 @@ productsRouter.get(
     if (!data) {
       return res.status(404).json({ success: false, message: 'Producto no encontrado para el código de barras indicado' });
     }
+    res.json({ success: true, data });
+  })
+);
+
+productsRouter.get(
+  '/for-po',
+  authRequired,
+  asyncHandler(async (_req, res) => {
+    const data = await listAllProductsForPO();
+    res.json({ success: true, data });
+  })
+);
+
+productsRouter.get(
+  '/by-lab/:id',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await listProductsByLaboratorio(Number(req.params.id));
     res.json({ success: true, data });
   })
 );

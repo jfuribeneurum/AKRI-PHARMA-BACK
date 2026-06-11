@@ -1,81 +1,76 @@
 import { query } from '../config/db.js';
 
-export async function listProviders() {
+export async function listLaboratorios() {
   return query(
-    `SELECT p.id_proveedor, p.codigo, p.tipo_identificacion, p.numero_identificacion, p.digito_verificacion,
-            p.razon_social, p.nombres, p.apellidos, p.telefono, p.email, p.ciudad, p.departamento, p.direccion, p.activo,
-            p.id_laboratorio, l.nombre AS laboratorio_nombre
-       FROM proveedores p
-       LEFT JOIN laboratorios l ON l.id_laboratorio = p.id_laboratorio
-      ORDER BY COALESCE(p.razon_social, p.nombre) ASC`
+    `SELECT id_laboratorio, codigo, tipo_identificacion, numero_identificacion, digito_verificacion,
+            nombre, nombres, apellidos, telefono, email, pais, ciudad, departamento, direccion, activo
+       FROM laboratorios
+      ORDER BY nombre ASC`
   );
 }
 
-export async function createProvider(data) {
-  const razonSocial = (data.razon_social ?? '').trim();
+export async function createLaboratorio(data) {
+  const nombre = (data.nombre ?? '').trim();
   const result = await query(
-    `INSERT INTO proveedores (
+    `INSERT INTO laboratorios (
        codigo, tipo_identificacion, numero_identificacion, digito_verificacion,
-       razon_social, nombre, nombres, apellidos, telefono, email, ciudad, departamento, direccion, activo, id_laboratorio
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       nombre, nombres, apellidos, telefono, email, pais, ciudad, departamento, direccion, activo
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       data.codigo?.trim() || null,
       data.tipo_identificacion ?? 'NIT',
-      (data.numero_identificacion ?? '').trim(),
+      data.numero_identificacion?.trim() || null,
       data.digito_verificacion?.trim() || null,
-      razonSocial,
-      razonSocial,
+      nombre,
       data.nombres?.trim() || null,
       data.apellidos?.trim() || null,
       data.telefono?.trim() || null,
       data.email?.trim() || null,
+      data.pais?.trim() || null,
       data.ciudad?.trim() || null,
       data.departamento?.trim() || null,
       data.direccion?.trim() || null,
       data.activo !== false,
-      data.id_laboratorio ?? null
     ]
   );
-  return { id_proveedor: result.insertId };
+  return { id_laboratorio: result.insertId };
 }
 
-export async function updateProvider(id, data) {
-  const razonSocial = (data.razon_social ?? '').trim();
+export async function updateLaboratorio(id, data) {
+  const nombre = (data.nombre ?? '').trim();
   await query(
-    `UPDATE proveedores SET
+    `UPDATE laboratorios SET
        codigo = ?,
        tipo_identificacion = ?,
        numero_identificacion = ?,
        digito_verificacion = ?,
-       razon_social = ?,
        nombre = ?,
        nombres = ?,
        apellidos = ?,
        telefono = ?,
        email = ?,
+       pais = ?,
        ciudad = ?,
        departamento = ?,
        direccion = ?,
-       activo = ?,
-       id_laboratorio = ?
-     WHERE id_proveedor = ?`,
+       activo = ?
+     WHERE id_laboratorio = ?`,
     [
       data.codigo?.trim() || null,
       data.tipo_identificacion ?? 'NIT',
-      (data.numero_identificacion ?? '').trim(),
+      data.numero_identificacion?.trim() || null,
       data.digito_verificacion?.trim() || null,
-      razonSocial,
-      razonSocial,
+      nombre,
       data.nombres?.trim() || null,
       data.apellidos?.trim() || null,
       data.telefono?.trim() || null,
       data.email?.trim() || null,
+      data.pais?.trim() || null,
       data.ciudad?.trim() || null,
       data.departamento?.trim() || null,
       data.direccion?.trim() || null,
       data.activo !== false,
-      data.id_laboratorio ?? null,
-      id
+      id,
     ]
   );
 }

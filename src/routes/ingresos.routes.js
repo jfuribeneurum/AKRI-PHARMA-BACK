@@ -99,13 +99,21 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
     if (!nombreProducto) continue;
     const codigoItem = (item.codigo || '').trim();
 
-    // Buscar producto por SKU (código) o por nombre
+    // Buscar producto por codigo_control (ej: MX01-4.1) → identifica lab exacto
     let [[producto]] = codigoItem
       ? await connection.query(
-          `SELECT id_producto FROM productos WHERE sku = ? LIMIT 1`,
+          `SELECT id_producto FROM productos WHERE codigo_control = ? LIMIT 1`,
           [codigoItem]
         )
       : [[null]];
+
+    // Fallback: buscar por sku exacto si codigo_control no coincide
+    if (!producto && codigoItem) {
+      [[producto]] = await connection.query(
+        `SELECT id_producto FROM productos WHERE sku = ? LIMIT 1`,
+        [codigoItem]
+      );
+    }
 
     if (!producto) {
       [[producto]] = await connection.query(
