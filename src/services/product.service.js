@@ -105,8 +105,9 @@ export async function listProductsByLaboratorio(idLaboratorio) {
   );
 }
 
-export async function listProducts(search = '') {
+export async function listProducts(search = '', idLaboratorio = null, lote = '') {
   const wildcard = `%${search}%`;
+  const loteWildcard = `%${lote}%`;
 
   return query(
     `SELECT
@@ -147,8 +148,12 @@ export async function listProducts(search = '') {
      WHERE p.sku IS NOT NULL AND p.sku != ''
        AND p.nombre_comercial IS NOT NULL AND p.nombre_comercial != ''
        AND (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.principio_activo LIKE ? OR p.codigo_barras LIKE ?)
+       AND (? IS NULL OR p.id_laboratorio = ?)
+       AND (? = '' OR EXISTS (
+             SELECT 1 FROM lotes l WHERE l.id_producto = p.id_producto AND l.numero_lote LIKE ?
+           ))
      ORDER BY p.nombre_comercial ASC`,
-    [env.PUBLIC_UPLOAD_BASE_URL, search, wildcard, wildcard, wildcard, wildcard]
+    [env.PUBLIC_UPLOAD_BASE_URL, search, wildcard, wildcard, wildcard, wildcard, idLaboratorio, idLaboratorio, lote, loteWildcard]
   );
 }
 

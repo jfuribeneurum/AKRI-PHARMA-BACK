@@ -77,7 +77,10 @@ productsRouter.get(
   '/',
   authRequired,
   asyncHandler(async (req, res) => {
-    const data = await listProducts(String(req.query.search ?? ''));
+    const search       = String(req.query.search ?? '');
+    const idLaboratorio = req.query.id_laboratorio ? Number(req.query.id_laboratorio) : null;
+    const lote         = String(req.query.lote ?? '');
+    const data = await listProducts(search, idLaboratorio, lote);
     res.json({ success: true, data });
   })
 );

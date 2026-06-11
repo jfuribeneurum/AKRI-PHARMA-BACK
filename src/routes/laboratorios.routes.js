@@ -15,19 +15,7 @@ laboratoriosRouter.get('/', asyncHandler(async (_req, res) => {
 }));
 
 const labSchema = z.object({
-  codigo: z.string().optional().nullable(),
-  tipo_identificacion: z.enum(['NIT', 'CC', 'CE', 'Pasaporte']).default('NIT'),
-  numero_identificacion: z.string().optional().nullable(),
-  digito_verificacion: z.string().max(2).optional().nullable(),
   nombre: z.string().min(1),
-  nombres: z.string().optional().nullable(),
-  apellidos: z.string().optional().nullable(),
-  telefono: z.string().optional().nullable(),
-  email: z.string().email().optional().nullable(),
-  pais: z.string().optional().nullable(),
-  ciudad: z.string().optional().nullable(),
-  departamento: z.string().optional().nullable(),
-  direccion: z.string().optional().nullable(),
   activo: z.boolean().optional(),
 });
 
