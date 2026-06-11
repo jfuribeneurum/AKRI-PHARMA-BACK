@@ -54,8 +54,8 @@ async function ensureProductExists(id) {
   const rows = await query(
     `SELECT id_producto, id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo,
             concentracion, presentacion, unidad_medida, registro_invima, cum, consecutivo_cum,
-            id_categoria, id_forma, codigo_atc, clasificacion, id_laboratorio, tipo_producto,
-            mx_control, es_controlado, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
+            id_categoria, id_forma, codigo_atc, codigo_dci, clasificacion, id_laboratorio, tipo_producto,
+            mx_control, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
             costo_referencia, precio_venta, stock_minimo, stock_maximo, punto_reorden, activo,
             fecha_creacion, fecha_modificacion, creado_por, modificado_por
      FROM productos
@@ -120,7 +120,6 @@ export async function listProducts(search = '') {
         p.concentracion,
         p.tipo_producto,
         p.mx_control,
-        p.es_controlado,
         p.requiere_cadena_frio,
         p.precio_venta,
         p.stock_minimo,
@@ -166,7 +165,6 @@ export async function getProductByBarcode(barcode) {
         p.unidad_medida,
         p.tipo_producto,
         p.mx_control,
-        p.es_controlado,
         p.requiere_cadena_frio,
         p.temp_min,
         p.temp_max,
@@ -284,6 +282,32 @@ function extractLastCumPart(cum) {
   return match ? match[1] : str;
 }
 
+async function saveTrace({ proceso, subproceso, estado = 'terminado', idUsuario = null, referenciaTipo = null, referenciaId = null, descripcion = null, payload = null }) {
+  try {
+    await query(
+      `INSERT INTO procesos_terminados_trazabilidad
+        (proceso, subproceso, estado, id_usuario, referencia_tipo, referencia_id, descripcion, payload_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [proceso, subproceso, estado, idUsuario, referenciaTipo, referenciaId, descripcion, payload ? JSON.stringify(payload) : null]
+    );
+  } catch { /* trazabilidad es no-crítica */ }
+}
+
+export async function checkPresentacionDuplicate(presentacion, idLaboratorio, excludeId = null) {
+  if (presentacion == null || presentacion === '') return null;
+  const params = excludeId
+    ? [presentacion, idLaboratorio ?? null, excludeId]
+    : [presentacion, idLaboratorio ?? null];
+  const rows = await query(
+    `SELECT codigo_control FROM productos
+     WHERE presentacion = ? AND id_laboratorio <=> ?
+     ${excludeId ? 'AND id_producto != ?' : ''}
+     LIMIT 1`,
+    params
+  );
+  return rows[0]?.codigo_control ?? null;
+}
+
 export async function getNextControlCode(sku, idLaboratorio, consecutivoCum) {
   if (!sku) return { codigo_control: null, duplicate_cum: null };
 
@@ -308,6 +332,20 @@ export async function getNextControlCode(sku, idLaboratorio, consecutivoCum) {
 }
 
 export async function createProduct(payload, userId = null) {
+  // Duplicado: misma presentacion + mismo laboratorio
+  if (payload.presentacion != null) {
+    const dupPresentacion = await checkPresentacionDuplicate(payload.presentacion, payload.id_laboratorio);
+    if (dupPresentacion) {
+      await saveTrace({
+        proceso: 'maestro_mx', subproceso: 'presentacion_duplicada_bloqueada', estado: 'cancelado',
+        idUsuario: userId, referenciaTipo: 'producto',
+        descripcion: `Intento bloqueado: presentación ${payload.presentacion} ya asociada a ${dupPresentacion}`,
+        payload: { presentacion: payload.presentacion, id_laboratorio: payload.id_laboratorio, codigo_control_existente: dupPresentacion, sku: payload.sku }
+      });
+      throw new HttpError(409, `La presentación "${payload.presentacion}" ya está asociada a "${dupPresentacion}" para ese laboratorio.`);
+    }
+  }
+
   // Duplicado: mismo consecutivo_cum + mismo laboratorio
   if (payload.consecutivo_cum != null) {
     const existing = await query(
@@ -332,8 +370,8 @@ export async function createProduct(payload, userId = null) {
     `INSERT INTO productos (
       id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo, concentracion, presentacion,
       unidad_medida, registro_invima, cum, consecutivo_cum,
-      id_categoria, id_forma, codigo_atc, clasificacion, id_laboratorio, tipo_producto, mx_control,
-      es_controlado, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
+      id_categoria, id_forma, codigo_atc, codigo_dci, clasificacion, id_laboratorio, tipo_producto, mx_control,
+      requiere_cadena_frio, temp_min, temp_max, iva_tasa,
       stock_minimo, stock_maximo, punto_reorden, activo, creado_por
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -352,11 +390,11 @@ export async function createProduct(payload, userId = null) {
       payload.id_categoria ?? null,
       payload.id_forma ?? null,
       payload.codigo_atc ?? null,
+      payload.codigo_dci ?? null,
       payload.clasificacion ?? null,
       payload.id_laboratorio ?? null,
       payload.tipo_producto ?? 'medicamento',
       payload.mx_control ?? false,
-      payload.es_controlado ?? false,
       payload.requiere_cadena_frio ?? false,
       payload.temp_min ?? null,
       payload.temp_max ?? null,
@@ -369,12 +407,37 @@ export async function createProduct(payload, userId = null) {
     ]
   );
 
-  return getProductById(result.insertId);
+  const created = await getProductById(result.insertId);
+  await saveTrace({
+    proceso: 'maestro_mx', subproceso: 'producto_creado', estado: 'terminado',
+    idUsuario: userId, referenciaTipo: 'producto', referenciaId: created.id_producto,
+    descripcion: `Producto creado: ${created.codigo_control ?? created.sku}`,
+    payload: {
+      id_producto: created.id_producto, sku: created.sku, codigo_control: created.codigo_control,
+      nombre_comercial: created.nombre_comercial, presentacion: created.presentacion,
+      id_laboratorio: created.id_laboratorio, consecutivo_cum: created.consecutivo_cum
+    }
+  });
+  return created;
 }
 
 export async function updateProduct(id, payload, userId = null) {
   const current = await ensureProductExists(id);
   const merged = { ...current, ...payload };
+
+  // Duplicado: misma presentacion + mismo laboratorio (excluyendo el propio producto)
+  if (merged.presentacion != null) {
+    const dupPresentacion = await checkPresentacionDuplicate(merged.presentacion, merged.id_laboratorio, id);
+    if (dupPresentacion) {
+      await saveTrace({
+        proceso: 'maestro_mx', subproceso: 'presentacion_duplicada_bloqueada', estado: 'cancelado',
+        idUsuario: userId, referenciaTipo: 'producto', referenciaId: id,
+        descripcion: `Edición bloqueada: presentación ${merged.presentacion} ya asociada a ${dupPresentacion}`,
+        payload: { id_producto: id, presentacion: merged.presentacion, id_laboratorio: merged.id_laboratorio, codigo_control_existente: dupPresentacion }
+      });
+      throw new HttpError(409, `La presentación "${merged.presentacion}" ya está asociada a "${dupPresentacion}" para ese laboratorio.`);
+    }
+  }
 
   await query(
     `UPDATE productos SET
@@ -391,11 +454,11 @@ export async function updateProduct(id, payload, userId = null) {
       id_categoria = ?,
       id_forma = ?,
       codigo_atc = ?,
+      codigo_dci = ?,
       clasificacion = ?,
       id_laboratorio = ?,
       tipo_producto = ?,
       mx_control = ?,
-      es_controlado = ?,
       requiere_cadena_frio = ?,
       temp_min = ?,
       temp_max = ?,
@@ -420,11 +483,11 @@ export async function updateProduct(id, payload, userId = null) {
       merged.id_categoria,
       merged.id_forma,
       merged.codigo_atc,
+      merged.codigo_dci ?? null,
       merged.clasificacion ?? null,
       merged.id_laboratorio,
       merged.tipo_producto,
       merged.mx_control,
-      merged.es_controlado,
       merged.requiere_cadena_frio,
       merged.temp_min,
       merged.temp_max,
@@ -438,7 +501,19 @@ export async function updateProduct(id, payload, userId = null) {
     ]
   );
 
-  return getProductById(id);
+  const updated = await getProductById(id);
+  await saveTrace({
+    proceso: 'maestro_mx', subproceso: 'producto_actualizado', estado: 'terminado',
+    idUsuario: userId, referenciaTipo: 'producto', referenciaId: id,
+    descripcion: `Producto actualizado: ${updated.codigo_control ?? updated.sku}`,
+    payload: {
+      id_producto: id, sku: updated.sku, codigo_control: updated.codigo_control,
+      nombre_comercial: updated.nombre_comercial, presentacion: updated.presentacion,
+      id_laboratorio: updated.id_laboratorio, consecutivo_cum: updated.consecutivo_cum,
+      campos_previos: { presentacion: current.presentacion, id_laboratorio: current.id_laboratorio }
+    }
+  });
+  return updated;
 }
 
 export async function saveProductImage(idProduct, payload, userId) {

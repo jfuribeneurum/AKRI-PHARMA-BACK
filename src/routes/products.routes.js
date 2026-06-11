@@ -15,7 +15,8 @@ import {
   listProductImages,
   saveProductImage,
   listLaboratorios,
-  getNextControlCode
+  getNextControlCode,
+  checkPresentacionDuplicate
 } from '../services/product.service.js';
 
 const productSchema = z.object({
@@ -24,19 +25,19 @@ const productSchema = z.object({
   nombre_comercial: z.string().min(2),
   principio_activo: z.string().optional().nullable(),
   concentracion: z.string().optional().nullable(),
-  presentacion: z.string().optional().nullable(),
+  presentacion: z.number().int().optional().nullable(),
   unidad_medida: z.string().optional(),
   registro_invima: z.string().optional().nullable(),
   cum: z.number().int({ message: 'El CUM es obligatorio' }),
-  consecutivo_cum: z.union([z.string(), z.number()]).transform(v => String(v)),
+  consecutivo_cum: z.number().int().optional().nullable(),
   id_categoria: z.number().int().optional().nullable(),
   id_forma: z.number().int().optional().nullable(),
   codigo_atc: z.string().optional().nullable(),
+  codigo_dci: z.number().int().optional().nullable(),
   id_laboratorio: z.number().int({ message: 'El laboratorio es obligatorio' }),
   clasificacion: z.string().optional().nullable(),
   tipo_producto: z.enum(['medicamento', 'insumo', 'controlado', 'vacuna', 'dispositivo', 'otro']).optional(),
   mx_control: z.boolean().optional(),
-  es_controlado: z.boolean().optional(),
   requiere_cadena_frio: z.boolean().optional(),
   temp_min: z.number().optional().nullable(),
   temp_max: z.number().optional().nullable(),
@@ -123,6 +124,20 @@ productsRouter.get(
   asyncHandler(async (req, res) => {
     const data = await listProductsByLaboratorio(Number(req.params.id));
     res.json({ success: true, data });
+  })
+);
+
+productsRouter.get(
+  '/check-presentacion',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const presentacion = req.query.presentacion != null && req.query.presentacion !== ''
+      ? Number(req.query.presentacion)
+      : null;
+    const idLaboratorio = req.query.id_laboratorio ? Number(req.query.id_laboratorio) : null;
+    const excludeId = req.query.exclude_id ? Number(req.query.exclude_id) : null;
+    const codigoControl = await checkPresentacionDuplicate(presentacion, idLaboratorio, excludeId);
+    res.json({ success: true, data: { codigo_control: codigoControl } });
   })
 );
 

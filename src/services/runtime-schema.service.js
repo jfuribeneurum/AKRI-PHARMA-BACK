@@ -319,7 +319,6 @@ async function ensureInventoryViews() {
         p.principio_activo,
         p.concentracion,
         p.requiere_cadena_frio,
-        p.es_controlado,
         ROUND(SUM(COALESCE(e.cantidad_disponible,0)),3) AS stock_disponible,
         ROUND(SUM(COALESCE(e.cantidad_reservada,0)),3) AS stock_reservado,
         ROUND(SUM(COALESCE(e.cantidad_cuarentena,0)),3) AS stock_cuarentena,
@@ -345,7 +344,6 @@ async function ensureInventoryViews() {
         p.principio_activo,
         p.concentracion,
         p.requiere_cadena_frio,
-        p.es_controlado,
         ROUND(SUM(COALESCE(e.cantidad_disponible,0)),3) AS stock_disponible_total,
         ROUND(SUM(COALESCE(e.cantidad_reservada,0)),3) AS stock_reservado_total,
         ROUND(SUM(COALESCE(e.cantidad_cuarentena,0)),3) AS stock_cuarentena_total,
@@ -727,6 +725,46 @@ async function ensureIngresosSchema() {
             ON DELETE SET NULL ON UPDATE CASCADE
       `)
     );
+  }
+
+  if (await columnExists('productos', 'es_controlado')) {
+    await runStatement(`ALTER TABLE productos DROP COLUMN es_controlado`);
+    console.log('[schema] Columna es_controlado eliminada de productos');
+  }
+
+  if (!(await columnExists('productos', 'codigo_dci'))) {
+    await runStatement(`ALTER TABLE productos ADD COLUMN codigo_dci VARCHAR(255) NULL AFTER codigo_atc`);
+    console.log('[schema] Columna codigo_dci agregada a productos');
+  }
+
+  // Convertir presentacion a INT si aún es VARCHAR/TEXT
+  const [presentColRows] = await query(
+    `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'productos' AND COLUMN_NAME = 'presentacion'`
+  );
+  if (presentColRows && presentColRows.DATA_TYPE && !['int','bigint','smallint','tinyint','mediumint'].includes(presentColRows.DATA_TYPE.toLowerCase())) {
+    await runStatement(`ALTER TABLE productos MODIFY COLUMN presentacion INT NULL`);
+    console.log('[schema] Columna presentacion convertida a INT');
+  }
+
+  // Convertir codigo_dci a INT si aún es VARCHAR/TEXT
+  const [dciColRows] = await query(
+    `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'productos' AND COLUMN_NAME = 'codigo_dci'`
+  );
+  if (dciColRows && dciColRows.DATA_TYPE && !['int','bigint','smallint','tinyint','mediumint'].includes(dciColRows.DATA_TYPE.toLowerCase())) {
+    await runStatement(`ALTER TABLE productos MODIFY COLUMN codigo_dci INT NULL`);
+    console.log('[schema] Columna codigo_dci convertida a INT');
+  }
+
+  // Convertir consecutivo_cum a INT si aún es VARCHAR/TEXT
+  const [cumColRows] = await query(
+    `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'productos' AND COLUMN_NAME = 'consecutivo_cum'`
+  );
+  if (cumColRows && cumColRows.DATA_TYPE && !['int','bigint','smallint','tinyint','mediumint'].includes(cumColRows.DATA_TYPE.toLowerCase())) {
+    await runStatement(`ALTER TABLE productos MODIFY COLUMN consecutivo_cum INT NULL`);
+    console.log('[schema] Columna consecutivo_cum convertida a INT');
   }
 }
 
