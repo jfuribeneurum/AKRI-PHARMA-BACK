@@ -12,7 +12,8 @@ import {
   getProductByBarcode,
   listProductImages,
   saveProductImage,
-  listLaboratorios
+  listLaboratorios,
+  getNextControlCode
 } from '../services/product.service.js';
 
 const productSchema = z.object({
@@ -24,12 +25,12 @@ const productSchema = z.object({
   presentacion: z.string().optional().nullable(),
   unidad_medida: z.string().optional(),
   registro_invima: z.string().optional().nullable(),
-  cum: z.number().int().optional().nullable(),
-  consecutivo_cum: z.number().int().optional().nullable(),
+  cum: z.number().int({ message: 'El CUM es obligatorio' }),
+  consecutivo_cum: z.union([z.string(), z.number()]).transform(v => String(v)),
   id_categoria: z.number().int().optional().nullable(),
   id_forma: z.number().int().optional().nullable(),
   codigo_atc: z.string().optional().nullable(),
-  id_laboratorio: z.number().int().optional().nullable(),
+  id_laboratorio: z.number().int({ message: 'El laboratorio es obligatorio' }),
   tipo_producto: z.enum(['medicamento', 'insumo', 'controlado', 'vacuna', 'dispositivo', 'otro']).optional(),
   mx_control: z.boolean().optional(),
   es_controlado: z.boolean().optional(),
@@ -77,6 +78,20 @@ productsRouter.get(
   })
 );
 
+
+productsRouter.get(
+  '/next-control-code',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const sku = String(req.query.sku ?? '').trim();
+    const idLaboratorio = req.query.id_laboratorio ? Number(req.query.id_laboratorio) : null;
+    const consecutivoCum = req.query.consecutivo_cum != null && req.query.consecutivo_cum !== ''
+      ? Number(req.query.consecutivo_cum)
+      : null;
+    const data = await getNextControlCode(sku, idLaboratorio, consecutivoCum);
+    res.json({ success: true, data });
+  })
+);
 
 productsRouter.get(
   '/barcode/:barcode',

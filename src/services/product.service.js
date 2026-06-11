@@ -52,7 +52,7 @@ function parseImageDataUrl(dataUrl) {
 
 async function ensureProductExists(id) {
   const rows = await query(
-    `SELECT id_producto, id_medicamento_hs, sku, codigo_barras, nombre_comercial, principio_activo,
+    `SELECT id_producto, id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo,
             concentracion, presentacion, unidad_medida, registro_invima, cum, consecutivo_cum,
             id_categoria, id_forma, codigo_atc, id_laboratorio, tipo_producto,
             mx_control, es_controlado, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
@@ -88,6 +88,7 @@ export async function listProducts(search = '') {
         p.id_producto,
         p.id_medicamento_hs,
         p.sku,
+        p.codigo_control,
         p.codigo_barras,
         p.nombre_comercial,
         p.principio_activo,
@@ -251,18 +252,69 @@ export async function getProductById(id) {
   };
 }
 
+function extractLastCumPart(cum) {
+  if (cum == null) return null;
+  const str = String(cum).trim();
+  const match = str.match(/[.\-](\w+)$/);
+  return match ? match[1] : str;
+}
+
+export async function getNextControlCode(sku, idLaboratorio, consecutivoCum) {
+  if (!sku) return { codigo_control: null, duplicate_cum: null };
+
+  // Formato: {sku}-{id_laboratorio}.{consecutivo_cum}
+  // El id_laboratorio es el ID real del lab en BD — no un contador secuencial
+  const labPart = idLaboratorio != null ? idLaboratorio : '0';
+  const lastCum = extractLastCumPart(consecutivoCum);
+  const cumSuffix = lastCum ? `.${lastCum}` : '';
+  const codigo_control = `${sku}-${labPart}${cumSuffix}`;
+
+  // Única restricción: mismo SKU + mismo consecutivo CUM
+  let duplicate_cum = null;
+  if (consecutivoCum != null && consecutivoCum !== '') {
+    const dupCum = await query(
+      `SELECT codigo_control FROM productos WHERE sku = ? AND consecutivo_cum = ? LIMIT 1`,
+      [sku, consecutivoCum]
+    );
+    duplicate_cum = dupCum[0]?.codigo_control ?? null;
+  }
+
+  return { codigo_control, duplicate_cum };
+}
+
 export async function createProduct(payload) {
+  // Única restricción: mismo SKU + mismo consecutivo CUM = duplicado
+  if (payload.sku && payload.consecutivo_cum != null) {
+    const existing = await query(
+      `SELECT codigo_control FROM productos WHERE sku = ? AND consecutivo_cum = ? LIMIT 1`,
+      [payload.sku, payload.consecutivo_cum]
+    );
+    if (existing[0]) {
+      throw new HttpError(
+        409,
+        `Ya existe "${existing[0].codigo_control}" con el consecutivo CUM "${payload.consecutivo_cum}". No se puede crear un duplicado.`
+      );
+    }
+  }
+
+  // Formato: {sku}-{id_laboratorio}.{último_número_consecutivo_cum}
+  const labPart = payload.id_laboratorio ?? 0;
+  const lastCum = extractLastCumPart(payload.consecutivo_cum);
+  const cumSuffix = lastCum ? `.${lastCum}` : '';
+  const codigoControl = payload.sku ? `${payload.sku}-${labPart}${cumSuffix}` : null;
+
   const result = await query(
     `INSERT INTO productos (
-      id_medicamento_hs, sku, codigo_barras, nombre_comercial, principio_activo, concentracion, presentacion,
+      id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo, concentracion, presentacion,
       unidad_medida, registro_invima, cum, consecutivo_cum,
       id_categoria, id_forma, codigo_atc, id_laboratorio, tipo_producto, mx_control,
       es_controlado, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
       stock_minimo, stock_maximo, punto_reorden, activo
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.id_medicamento_hs ?? null,
       payload.sku,
+      codigoControl,
       payload.codigo_barras ?? null,
       payload.nombre_comercial,
       payload.principio_activo ?? null,
