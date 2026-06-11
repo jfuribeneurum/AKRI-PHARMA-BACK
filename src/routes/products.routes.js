@@ -31,6 +31,7 @@ const productSchema = z.object({
   id_forma: z.number().int().optional().nullable(),
   codigo_atc: z.string().optional().nullable(),
   id_laboratorio: z.number().int({ message: 'El laboratorio es obligatorio' }),
+  clasificacion: z.string().optional().nullable(),
   tipo_producto: z.enum(['medicamento', 'insumo', 'controlado', 'vacuna', 'dispositivo', 'otro']).optional(),
   mx_control: z.boolean().optional(),
   es_controlado: z.boolean().optional(),
@@ -128,7 +129,7 @@ productsRouter.post(
   authRequired,
   validate(productSchema),
   asyncHandler(async (req, res) => {
-    const data = await createProduct(req.body);
+    const data = await createProduct(req.body, req.user?.sub ?? null);
     res.status(201).json({ success: true, data });
   })
 );
@@ -148,7 +149,7 @@ productsRouter.put(
   authRequired,
   validate(productSchema.partial()),
   asyncHandler(async (req, res) => {
-    const data = await updateProduct(Number(req.params.id), req.body);
+    const data = await updateProduct(Number(req.params.id), req.body, req.user?.sub ?? null);
     res.json({ success: true, data });
   })
 );

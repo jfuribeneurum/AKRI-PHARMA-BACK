@@ -54,10 +54,10 @@ async function ensureProductExists(id) {
   const rows = await query(
     `SELECT id_producto, id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo,
             concentracion, presentacion, unidad_medida, registro_invima, cum, consecutivo_cum,
-            id_categoria, id_forma, codigo_atc, id_laboratorio, tipo_producto,
+            id_categoria, id_forma, codigo_atc, clasificacion, id_laboratorio, tipo_producto,
             mx_control, es_controlado, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
             costo_referencia, precio_venta, stock_minimo, stock_maximo, punto_reorden, activo,
-            fecha_creacion, fecha_modificacion
+            fecha_creacion, fecha_modificacion, creado_por, modificado_por
      FROM productos
      WHERE id_producto = ?`,
     [id]
@@ -282,7 +282,7 @@ export async function getNextControlCode(sku, idLaboratorio, consecutivoCum) {
   return { codigo_control, duplicate_cum };
 }
 
-export async function createProduct(payload) {
+export async function createProduct(payload, userId = null) {
   // Única restricción: mismo SKU + mismo consecutivo CUM = duplicado
   if (payload.sku && payload.consecutivo_cum != null) {
     const existing = await query(
@@ -307,10 +307,10 @@ export async function createProduct(payload) {
     `INSERT INTO productos (
       id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo, concentracion, presentacion,
       unidad_medida, registro_invima, cum, consecutivo_cum,
-      id_categoria, id_forma, codigo_atc, id_laboratorio, tipo_producto, mx_control,
+      id_categoria, id_forma, codigo_atc, clasificacion, id_laboratorio, tipo_producto, mx_control,
       es_controlado, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
-      stock_minimo, stock_maximo, punto_reorden, activo
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      stock_minimo, stock_maximo, punto_reorden, activo, creado_por
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.id_medicamento_hs ?? null,
       payload.sku,
@@ -327,6 +327,7 @@ export async function createProduct(payload) {
       payload.id_categoria ?? null,
       payload.id_forma ?? null,
       payload.codigo_atc ?? null,
+      payload.clasificacion ?? null,
       payload.id_laboratorio ?? null,
       payload.tipo_producto ?? 'medicamento',
       payload.mx_control ?? false,
@@ -338,14 +339,15 @@ export async function createProduct(payload) {
       payload.stock_minimo ?? 0,
       payload.stock_maximo ?? 0,
       payload.punto_reorden ?? 0,
-      payload.activo ?? true
+      payload.activo ?? true,
+      userId
     ]
   );
 
   return getProductById(result.insertId);
 }
 
-export async function updateProduct(id, payload) {
+export async function updateProduct(id, payload, userId = null) {
   const current = await ensureProductExists(id);
   const merged = { ...current, ...payload };
 
@@ -364,6 +366,7 @@ export async function updateProduct(id, payload) {
       id_categoria = ?,
       id_forma = ?,
       codigo_atc = ?,
+      clasificacion = ?,
       id_laboratorio = ?,
       tipo_producto = ?,
       mx_control = ?,
@@ -375,7 +378,8 @@ export async function updateProduct(id, payload) {
       stock_minimo = ?,
       stock_maximo = ?,
       punto_reorden = ?,
-      activo = ?
+      activo = ?,
+      modificado_por = ?
     WHERE id_producto = ?`,
     [
       merged.id_medicamento_hs ?? null,
@@ -391,6 +395,7 @@ export async function updateProduct(id, payload) {
       merged.id_categoria,
       merged.id_forma,
       merged.codigo_atc,
+      merged.clasificacion ?? null,
       merged.id_laboratorio,
       merged.tipo_producto,
       merged.mx_control,
@@ -403,6 +408,7 @@ export async function updateProduct(id, payload) {
       merged.stock_maximo,
       merged.punto_reorden,
       merged.activo,
+      userId,
       id
     ]
   );
