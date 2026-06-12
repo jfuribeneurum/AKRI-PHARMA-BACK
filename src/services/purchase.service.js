@@ -108,7 +108,7 @@ export async function createPurchaseOrder(payload, user) {
         site.id_sede,
         numero_oc,
         payload.id_proveedor,
-        payload.estado ?? 'borrador',
+        payload.estado ?? 'enviada',
         totals.subtotal,
         totals.impuestos,
         totals.total,
@@ -156,6 +156,112 @@ export async function createPurchaseOrder(payload, user) {
       ...totals
     };
   });
+}
+
+export async function getPurchaseOrder(idOc) {
+  const rows = await query(
+    `SELECT oc.*, COALESCE(p.razon_social, p.nombre) AS proveedor_nombre,
+            s.nombre AS sede_nombre, s.ciudad AS sede_ciudad, s.direccion AS sede_direccion
+       FROM ordenes_compra oc
+       INNER JOIN proveedores p ON p.id_proveedor = oc.id_proveedor
+       LEFT JOIN sedes s ON s.id_sede = oc.id_sede
+      WHERE oc.id_oc = ?`,
+    [idOc]
+  );
+  const header = rows[0];
+  if (!header) throw new HttpError(404, 'Orden no encontrada');
+
+  const items = await query(
+    `SELECT ocd.id_oc_detalle, ocd.id_producto, ocd.cantidad, ocd.precio_unitario,
+            ocd.precio_venta, ocd.costo_referencia,
+            prod.nombre_comercial, prod.concentracion,
+            COALESCE(prod.codigo_control, prod.sku) AS codigo,
+            prod.id_laboratorio, lab.nombre AS laboratorio_nombre
+       FROM ordenes_compra_detalle ocd
+       INNER JOIN productos prod ON prod.id_producto = ocd.id_producto
+       LEFT JOIN laboratorios lab ON lab.id_laboratorio = prod.id_laboratorio
+      WHERE ocd.id_oc = ?
+      ORDER BY ocd.id_oc_detalle ASC`,
+    [idOc]
+  );
+
+  return { ...header, items };
+}
+
+export async function updatePurchaseOrder(idOc, payload, user) {
+  await assertCentralPurchasing(user);
+  return withTransaction(async (connection) => {
+    const [ocRows] = await connection.execute(
+      `SELECT * FROM ordenes_compra WHERE id_oc = ? FOR UPDATE`,
+      [idOc]
+    );
+    const oc = ocRows[0];
+    if (!oc) throw new HttpError(404, 'Orden no encontrada');
+    if (!['borrador', 'enviada', 'editada'].includes(oc.estado)) {
+      throw new HttpError(400, `No se puede editar una orden en estado "${oc.estado}"`);
+    }
+
+    const totals = calculateTotals(payload.items);
+
+    await connection.execute(
+      `UPDATE ordenes_compra
+         SET id_proveedor = ?, estado = 'editada',
+             subtotal = ?, impuestos = ?, total = ?, observaciones = ?
+       WHERE id_oc = ?`,
+      [payload.id_proveedor, totals.subtotal, totals.impuestos, totals.total, payload.observaciones ?? null, idOc]
+    );
+
+    await connection.execute(`DELETE FROM ordenes_compra_detalle WHERE id_oc = ?`, [idOc]);
+
+    for (const item of payload.items) {
+      await connection.execute(
+        `INSERT INTO ordenes_compra_detalle
+           (id_oc, id_producto, cantidad, precio_unitario, precio_venta, costo_referencia, descuento, impuesto, fecha_requerida)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [idOc, item.id_producto, item.cantidad, item.precio_unitario,
+         item.precio_venta ?? 0, item.costo_referencia ?? 0,
+         item.descuento ?? 0, item.impuesto ?? 0, item.fecha_requerida ?? null]
+      );
+    }
+
+    await recordProcessTrace(connection, {
+      proceso: 'COMPRAS', subproceso: 'ORDEN_COMPRA',
+      id_sede: oc.id_sede, id_usuario: user?.sub ?? null, perfil_nombre: user?.role ?? null,
+      referencia_tipo: 'ORDEN_COMPRA', referencia_id: idOc,
+      descripcion: `OC ${oc.numero_oc} editada`,
+      payload_json: { items: payload.items.length, total: totals.total }
+    });
+
+    return { id_oc: idOc, numero_oc: oc.numero_oc, estado: 'editada', ...totals };
+  });
+}
+
+export async function approvePurchaseOrder(idOc, user) {
+  await assertCentralPurchasing(user);
+  const rows = await query(
+    `SELECT id_oc, numero_oc, estado FROM ordenes_compra WHERE id_oc = ?`, [idOc]
+  );
+  const oc = rows[0];
+  if (!oc) throw new HttpError(404, 'Orden no encontrada');
+  if (!['borrador', 'enviada', 'editada'].includes(oc.estado)) {
+    throw new HttpError(400, `No se puede aprobar una orden en estado "${oc.estado}"`);
+  }
+  await query(`UPDATE ordenes_compra SET estado = 'aprobada' WHERE id_oc = ?`, [idOc]);
+  return { id_oc: idOc, numero_oc: oc.numero_oc, estado: 'aprobada' };
+}
+
+export async function cancelPurchaseOrder(idOc, user) {
+  await assertCentralPurchasing(user);
+  const rows = await query(
+    `SELECT id_oc, numero_oc, estado FROM ordenes_compra WHERE id_oc = ?`, [idOc]
+  );
+  const oc = rows[0];
+  if (!oc) throw new HttpError(404, 'Orden no encontrada');
+  if (!['borrador', 'enviada', 'editada'].includes(oc.estado)) {
+    throw new HttpError(400, `No se puede cancelar una orden en estado "${oc.estado}"`);
+  }
+  await query(`UPDATE ordenes_compra SET estado = 'cancelada' WHERE id_oc = ?`, [idOc]);
+  return { id_oc: idOc, numero_oc: oc.numero_oc, estado: 'cancelada' };
 }
 
 export async function receivePurchaseOrder(idOc, payload, user) {

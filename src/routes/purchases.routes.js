@@ -3,7 +3,17 @@ import { z } from 'zod';
 import { authRequired } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/async-handler.js';
-import { listPurchases, createPurchaseOrder, receivePurchaseOrder, previewNextNumeroOC, listWarehousesForPO } from '../services/purchase.service.js';
+import {
+  listPurchases,
+  getPurchaseOrder,
+  createPurchaseOrder,
+  updatePurchaseOrder,
+  approvePurchaseOrder,
+  cancelPurchaseOrder,
+  receivePurchaseOrder,
+  previewNextNumeroOC,
+  listWarehousesForPO
+} from '../services/purchase.service.js';
 
 const purchaseItemSchema = z.object({
   id_producto: z.number().int(),
@@ -19,7 +29,7 @@ const purchaseItemSchema = z.object({
 const purchaseSchema = z.object({
   numero_oc: z.string().optional(),
   id_proveedor: z.number().int(),
-  estado: z.enum(['borrador', 'aprobada']).optional(),
+  estado: z.enum(['enviada', 'editada', 'aprobada', 'cancelada']).optional(),
   observaciones: z.string().optional().nullable(),
   items: z.array(purchaseItemSchema).min(1)
 });
@@ -68,6 +78,15 @@ purchasesRouter.get(
   })
 );
 
+purchasesRouter.get(
+  '/:id',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await getPurchaseOrder(Number(req.params.id));
+    res.json({ success: true, data });
+  })
+);
+
 purchasesRouter.post(
   '/',
   authRequired,
@@ -75,6 +94,34 @@ purchasesRouter.post(
   asyncHandler(async (req, res) => {
     const data = await createPurchaseOrder(req.body, req.user);
     res.status(201).json({ success: true, data });
+  })
+);
+
+purchasesRouter.put(
+  '/:id',
+  authRequired,
+  validate(purchaseSchema),
+  asyncHandler(async (req, res) => {
+    const data = await updatePurchaseOrder(Number(req.params.id), req.body, req.user);
+    res.json({ success: true, data });
+  })
+);
+
+purchasesRouter.patch(
+  '/:id/approve',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await approvePurchaseOrder(Number(req.params.id), req.user);
+    res.json({ success: true, data });
+  })
+);
+
+purchasesRouter.patch(
+  '/:id/cancel',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await cancelPurchaseOrder(Number(req.params.id), req.user);
+    res.json({ success: true, data });
   })
 );
 

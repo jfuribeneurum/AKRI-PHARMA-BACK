@@ -83,10 +83,20 @@ export async function listLaboratorios() {
 export async function listAllProductsForPO() {
   return query(
     `SELECT p.id_producto, p.sku, p.codigo_control, p.codigo_barras, p.nombre_comercial, p.principio_activo,
-            p.concentracion, p.presentacion, p.costo_referencia, p.precio_venta,
+            p.concentracion, p.presentacion,
+            COALESCE(NULLIF(p.costo_referencia, 0), last_oc.precio_unitario, 0) AS costo_referencia,
+            COALESCE(NULLIF(p.precio_venta, 0), last_oc.precio_venta_oc, 0) AS precio_venta,
             p.id_laboratorio, lab.nombre AS laboratorio_nombre
        FROM productos p
        LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
+       LEFT JOIN (
+         SELECT ocd.id_producto,
+                ocd.precio_unitario,
+                ocd.precio_venta AS precio_venta_oc,
+                ROW_NUMBER() OVER (PARTITION BY ocd.id_producto ORDER BY oc.fecha DESC, oc.id_oc DESC) AS rn
+           FROM ordenes_compra_detalle ocd
+           INNER JOIN ordenes_compra oc ON oc.id_oc = ocd.id_oc
+       ) last_oc ON last_oc.id_producto = p.id_producto AND last_oc.rn = 1
       WHERE p.activo = TRUE
       ORDER BY p.nombre_comercial ASC`
   );
@@ -95,10 +105,20 @@ export async function listAllProductsForPO() {
 export async function listProductsByLaboratorio(idLaboratorio) {
   return query(
     `SELECT p.id_producto, p.sku, p.codigo_barras, p.nombre_comercial, p.principio_activo,
-            p.concentracion, p.presentacion, p.costo_referencia, p.precio_venta,
+            p.concentracion, p.presentacion,
+            COALESCE(NULLIF(p.costo_referencia, 0), last_oc.precio_unitario, 0) AS costo_referencia,
+            COALESCE(NULLIF(p.precio_venta, 0), last_oc.precio_venta_oc, 0) AS precio_venta,
             lab.nombre AS laboratorio_nombre
        FROM productos p
        LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
+       LEFT JOIN (
+         SELECT ocd.id_producto,
+                ocd.precio_unitario,
+                ocd.precio_venta AS precio_venta_oc,
+                ROW_NUMBER() OVER (PARTITION BY ocd.id_producto ORDER BY oc.fecha DESC, oc.id_oc DESC) AS rn
+           FROM ordenes_compra_detalle ocd
+           INNER JOIN ordenes_compra oc ON oc.id_oc = ocd.id_oc
+       ) last_oc ON last_oc.id_producto = p.id_producto AND last_oc.rn = 1
       WHERE p.id_laboratorio = ? AND p.activo = TRUE
       ORDER BY p.nombre_comercial ASC`,
     [idLaboratorio]
