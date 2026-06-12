@@ -60,6 +60,8 @@ const SEED = [
   { grupo: 'clasificacion_producto',   grupo_label: 'Clasificación de Producto',  valor: 'RIESGO IIa',  etiqueta: 'RIESGO IIa',  orden: 2 },
   { grupo: 'clasificacion_producto',   grupo_label: 'Clasificación de Producto',  valor: 'RIESGO IIb',  etiqueta: 'RIESGO IIb',  orden: 3 },
   { grupo: 'clasificacion_producto',   grupo_label: 'Clasificación de Producto',  valor: 'RIESGO III',  etiqueta: 'RIESGO III',  orden: 4 },
+
+  { grupo: 'iva',                      grupo_label: 'IVA (%)',                    valor: 'porcentaje_actual', etiqueta: '19',      orden: 1 },
 ];
 
 export async function initParametrosTable() {
