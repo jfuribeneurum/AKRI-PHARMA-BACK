@@ -648,6 +648,29 @@ export async function getInventorySummary(scope = 'general', siteId = null, sear
   );
 }
 
+export async function getStockByProductId(idProducto) {
+  return query(
+    `SELECT
+        l.id_lote,
+        l.numero_lote,
+        l.fecha_vencimiento,
+        a.nombre AS almacen,
+        ROUND(COALESCE(e.cantidad_disponible, 0), 3) AS cantidad_disponible,
+        DATEDIFF(l.fecha_vencimiento, CURRENT_DATE()) AS dias_para_vencer,
+        lab.nombre AS laboratorio_nombre
+     FROM lotes l
+     INNER JOIN existencias e ON e.id_lote = l.id_lote
+     INNER JOIN almacenes a ON a.id_almacen = e.id_almacen
+     INNER JOIN ubicaciones_almacen u ON u.id_ubicacion = e.id_ubicacion
+     INNER JOIN productos p ON p.id_producto = l.id_producto
+     LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
+     WHERE l.id_producto = ?
+       AND COALESCE(e.cantidad_disponible, 0) > 0
+     ORDER BY l.fecha_vencimiento ASC`,
+    [idProducto]
+  );
+}
+
 export async function getInventoryBySite(search = '') {
   const wildcard = `%${search}%`;
   return query(

@@ -13,7 +13,8 @@ import {
   registerBarcodeIngress,
   registerBarcodeEgress,
   getInventorySummary,
-  getInventoryBySite
+  getInventoryBySite,
+  getStockByProductId
 } from '../services/inventory.service.js';
 
 const movementSchema = z.object({
@@ -168,6 +169,19 @@ inventoryRouter.post(
   asyncHandler(async (req, res) => {
     const data = await registerBarcodeEgress(req.body, req.user.sub);
     res.status(201).json({ success: true, data });
+  })
+);
+
+inventoryRouter.get(
+  '/stock/product/:id',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id < 1) {
+      return res.status(400).json({ success: false, message: 'ID inválido' });
+    }
+    const data = await getStockByProductId(id);
+    res.json({ success: true, data });
   })
 );
 
