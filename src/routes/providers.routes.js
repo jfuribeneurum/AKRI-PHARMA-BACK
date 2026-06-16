@@ -15,8 +15,7 @@ providersRouter.get('/', asyncHandler(async (_req, res) => {
 }));
 
 const providerSchema = z.object({
-  codigo: z.string().optional().nullable(),
-  tipo_identificacion: z.enum(['NIT', 'CC', 'CE', 'Pasaporte']).default('NIT'),
+  tipo_identificacion: z.string().min(1).default('NIT'),
   numero_identificacion: z.string().min(1),
   digito_verificacion: z.string().max(2).optional().nullable(),
   razon_social: z.string().min(1),
@@ -26,7 +25,9 @@ const providerSchema = z.object({
   email: z.string().email().optional().nullable(),
   ciudad: z.string().optional().nullable(),
   departamento: z.string().optional().nullable(),
+  pais: z.string().optional().nullable(),
   direccion: z.string().optional().nullable(),
+  observaciones: z.string().optional().nullable(),
   activo: z.boolean().optional()
 });
 

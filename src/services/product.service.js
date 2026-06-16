@@ -55,7 +55,7 @@ async function ensureProductExists(id) {
     `SELECT id_producto, id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo,
             concentracion, presentacion, unidad_medida, registro_invima, cum, consecutivo_cum,
             id_categoria, id_forma, codigo_atc, codigo_dci, clasificacion, id_laboratorio, tipo_producto,
-            mx_control, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
+            mx_control, requiere_cadena_frio, temp_min, temp_max, iva_tasa, regimen_proveedor,
             costo_referencia, precio_venta, stock_minimo, stock_maximo, punto_reorden, activo,
             fecha_creacion, fecha_modificacion, creado_por, modificado_por
      FROM productos
@@ -396,9 +396,9 @@ export async function createProduct(payload, userId = null) {
       id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo, concentracion, presentacion,
       unidad_medida, registro_invima, cum, consecutivo_cum,
       id_categoria, id_forma, codigo_atc, codigo_dci, clasificacion, id_laboratorio, tipo_producto, mx_control,
-      requiere_cadena_frio, temp_min, temp_max, iva_tasa,
+      requiere_cadena_frio, temp_min, temp_max, iva_tasa, regimen_proveedor,
       stock_minimo, stock_maximo, punto_reorden, activo, creado_por
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.id_medicamento_hs ?? null,
       payload.sku,
@@ -424,6 +424,7 @@ export async function createProduct(payload, userId = null) {
       payload.temp_min ?? null,
       payload.temp_max ?? null,
       payload.iva_tasa ?? 0,
+      payload.regimen_proveedor ?? null,
       payload.stock_minimo ?? 0,
       payload.stock_maximo ?? 0,
       payload.punto_reorden ?? 0,
@@ -488,6 +489,7 @@ export async function updateProduct(id, payload, userId = null) {
       temp_min = ?,
       temp_max = ?,
       iva_tasa = ?,
+      regimen_proveedor = ?,
       stock_minimo = ?,
       stock_maximo = ?,
       punto_reorden = ?,
@@ -517,6 +519,7 @@ export async function updateProduct(id, payload, userId = null) {
       merged.temp_min,
       merged.temp_max,
       merged.iva_tasa,
+      merged.regimen_proveedor ?? null,
       merged.stock_minimo,
       merged.stock_maximo,
       merged.punto_reorden,
