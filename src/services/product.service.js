@@ -83,7 +83,7 @@ export async function listLaboratorios() {
 export async function listAllProductsForPO() {
   return query(
     `SELECT p.id_producto, p.sku, p.codigo_control, p.codigo_barras, p.nombre_comercial, p.principio_activo,
-            p.concentracion, p.presentacion,
+            p.concentracion, p.presentacion, p.iva_tasa,
             COALESCE(NULLIF(p.costo_referencia, 0), last_oc.precio_unitario, 0) AS costo_referencia,
             COALESCE(NULLIF(p.precio_venta, 0), last_oc.precio_venta_oc, 0) AS precio_venta,
             p.id_laboratorio, lab.nombre AS laboratorio_nombre
@@ -105,7 +105,7 @@ export async function listAllProductsForPO() {
 export async function listProductsByLaboratorio(idLaboratorio) {
   return query(
     `SELECT p.id_producto, p.sku, p.codigo_barras, p.nombre_comercial, p.principio_activo,
-            p.concentracion, p.presentacion,
+            p.concentracion, p.presentacion, p.iva_tasa,
             COALESCE(NULLIF(p.costo_referencia, 0), last_oc.precio_unitario, 0) AS costo_referencia,
             COALESCE(NULLIF(p.precio_venta, 0), last_oc.precio_venta_oc, 0) AS precio_venta,
             lab.nombre AS laboratorio_nombre
