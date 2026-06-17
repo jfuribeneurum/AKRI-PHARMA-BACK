@@ -501,8 +501,10 @@ export async function createMovement(payload, userId) {
       throw new HttpError(404, 'Lote no encontrado');
     }
 
-    const debitOriginTypes = ['salida_venta', 'merma', 'destruccion', 'cuarentena', 'traslado', 'devolucion_compra'];
-    const creditDestinationTypes = ['entrada_compra', 'traslado', 'devolucion_venta', 'liberacion'];
+    const debitOriginTypes = ['salida_venta', 'merma', 'destruccion', 'cuarentena', 'traslado', 'devolucion_compra',
+      'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno'];
+    const creditDestinationTypes = ['entrada_compra', 'traslado', 'devolucion_venta', 'liberacion',
+      'inventario_sobrante_fisico', 'bonificacion'];
 
     if (debitOriginTypes.includes(payload.tipo)) {
       if (!payload.id_ubicacion_origen) {

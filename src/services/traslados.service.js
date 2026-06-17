@@ -87,8 +87,8 @@ export async function listTraslados(filters = {}) {
        ud.nombre AS ubicacion_destino,
        uo_orig.id_usuario_origen,
        uo_dest.id_usuario_destino,
-       CONCAT(u_orig.nombre, ' ', COALESCE(u_orig.apellido,'')) AS nombre_emisor,
-       CONCAT(u_dest.nombre, ' ', COALESCE(u_dest.apellido,'')) AS nombre_receptor
+       u_orig.nombre_completo AS nombre_emisor,
+       u_dest.nombre_completo AS nombre_receptor
      FROM traslados t
      INNER JOIN productos p ON p.id_producto = t.id_producto
      INNER JOIN lotes l ON l.id_lote = t.id_lote

@@ -8,17 +8,110 @@ import { pool } from '../config/db.js';
 const router = Router();
 router.use(authRequired);
 
+const itemSchema = z.object({
+  codigo:          z.string().optional().nullable(),
+  nombre:          z.string().optional().nullable(),
+  laboratorio:     z.string().optional().nullable(),
+  cantidad:        z.number().optional().default(0),
+  valor_unitario:  z.number().optional().default(0),
+  descuento_pct:   z.number().optional().default(0),
+  descuento_valor: z.number().optional().default(0),
+  iva:             z.number().optional().default(0),
+  lote:            z.string().optional().nullable(),
+  fecha_vencimiento: z.string().optional().nullable(),
+  registro_invima: z.string().optional().nullable(),
+  cum:             z.string().optional().nullable(),
+  consecutivo_cum: z.string().optional().nullable(),
+  presentacion:    z.string().optional().nullable(),
+  temperatura:     z.string().optional().nullable(),
+  cumple:          z.boolean().nullable().optional(),
+});
+
 const ingresoSchema = z.object({
-  referencia: z.string().min(1, 'Referencia requerida'),
-  producto: z.string().min(1, 'Producto requerido'),
-  cantidad: z.number().min(1, 'Cantidad debe ser mayor a 0'),
-  lote: z.string().optional(),
-  fecha_vencimiento: z.string().optional(),
-  estado: z.enum(['pendiente', 'recibido', 'almacenado', 'cancelado']).default('pendiente')
+  referencia:           z.string().min(1, 'Referencia requerida'),
+  cantidad:             z.number().min(1, 'Cantidad debe ser mayor a 0'),
+  lote:                 z.string().optional().nullable(),
+  fecha_vencimiento:    z.string().optional().nullable(),
+  estado:               z.enum(['recibido', 'cancelado']).default('recibido'),
+  // Factura
+  prefijo_factura:      z.string().optional().nullable(),
+  numero_factura:       z.string().optional().nullable(),
+  cufe:                 z.string().optional().nullable(),
+  fecha_recepcion:      z.string().optional().nullable(),
+  observaciones:        z.string().optional().nullable(),
+  // Orden / sede
+  numero_orden_compra:  z.string().optional().nullable(),
+  sede:                 z.string().optional().nullable(),
+  bodega:               z.string().optional().nullable(),
+  // Proveedor
+  proveedor_nombre:     z.string().optional().nullable(),
+  proveedor_nit:        z.string().optional().nullable(),
+  proveedor_contacto:   z.string().optional().nullable(),
+  proveedor_telefono:   z.string().optional().nullable(),
+  proveedor_direccion:  z.string().optional().nullable(),
+  // Totales
+  total_bruto:          z.number().optional().nullable(),
+  total_descuento:      z.number().optional().nullable(),
+  subtotal_neto:        z.number().optional().nullable(),
+  total_iva:            z.number().optional().nullable(),
+  total_ingreso:        z.number().optional().nullable(),
+  // Items
+  items:                z.array(itemSchema).optional().default([]),
+  // Flag explícito para devoluciones (evita depender del prefijo de la referencia)
+  es_devolucion:        z.boolean().optional().default(false),
+  ingreso_original_ref: z.string().optional().nullable(),
 });
 
 // ──────────────────────────────────────────────
-// Helpers de parseo (misma lógica que el frontend)
+// Helper: construye el texto blob para actualizarInventario
+// ──────────────────────────────────────────────
+function buildProductoTexto(body) {
+  const {
+    items = [], numero_orden_compra, sede, bodega,
+    proveedor_nombre, proveedor_nit, prefijo_factura, numero_factura
+  } = body;
+
+  const facturaStr = [prefijo_factura, numero_factura].filter(Boolean).join('');
+
+  const metaLines = [
+    numero_orden_compra ? `Orden: ${numero_orden_compra}` : '',
+    sede                ? `Sede: ${sede}`                 : '',
+    bodega              ? `Bodega: ${bodega}`             : '',
+    proveedor_nombre    ? `Proveedor: ${proveedor_nombre}`: '',
+    proveedor_nit       ? `NIT: ${proveedor_nit}`         : '',
+    facturaStr          ? `Factura: ${facturaStr}`        : '',
+  ].filter(Boolean).join('\n');
+
+  const itemLines = items.map((item, idx) => {
+    const base = [
+      `Item ${idx + 1}:`,
+      `codigo=${item.codigo || ''}`,
+      `nombre=${item.nombre || ''}`,
+      `laboratorio=${item.laboratorio || ''}`,
+      `cantidad=${item.cantidad || 0}`,
+      `valor_unitario=${item.valor_unitario || 0}`,
+      `lote=${item.lote || ''}`,
+      `vencimiento=${item.fecha_vencimiento || ''}`,
+    ].join(' | ');
+
+    const med = [
+      item.registro_invima  ? `invima=${item.registro_invima}`        : '',
+      item.cum              ? `cum=${item.cum}`                       : '',
+      item.consecutivo_cum  ? `consec_cum=${item.consecutivo_cum}`    : '',
+      item.presentacion     ? `presentacion=${item.presentacion}`     : '',
+      item.iva              ? `iva=${item.iva}%`                      : '',
+      item.temperatura      ? `temp=${item.temperatura}`              : '',
+    ].filter(Boolean).join(' | ');
+
+    return med ? `${base}\n   [MX: ${med}]` : base;
+  }).join('\n');
+
+  const primerNombre = items[0]?.nombre || 'Ingreso';
+  return [primerNombre, metaLines, itemLines].filter(Boolean).join('\n');
+}
+
+// ──────────────────────────────────────────────
+// Helpers de parseo (para actualizarInventario)
 // ──────────────────────────────────────────────
 function parsearItemsIngreso(texto) {
   const items = [];
@@ -66,7 +159,6 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
   const meta = parsearMetaIngreso(productoTexto);
   const bodegaNombre = meta['Bodega'] || meta['Sede'] || '';
 
-  // Buscar almacén: primero por nombre de bodega, luego el principal, luego cualquiera activo
   let [[almacen]] = bodegaNombre
     ? await connection.query(
         `SELECT id_almacen FROM almacenes WHERE activo = 1 AND nombre LIKE ? LIMIT 1`,
@@ -88,7 +180,6 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
   if (!ubicacion) return;
 
   for (const item of items) {
-    // En devoluciones se usa la clave cantidad_devuelta; en entradas, cantidad
     const cantidadRaw = esDevolucion
       ? (item.cantidad_devuelta || item.cantidad)
       : item.cantidad;
@@ -99,7 +190,6 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
     if (!nombreProducto) continue;
     const codigoItem = (item.codigo || '').trim();
 
-    // Buscar producto por codigo_control (ej: MX01-4.1) → identifica lab exacto
     let [[producto]] = codigoItem
       ? await connection.query(
           `SELECT id_producto FROM productos WHERE codigo_control = ? LIMIT 1`,
@@ -107,7 +197,6 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
         )
       : [[null]];
 
-    // Fallback: buscar por sku exacto si codigo_control no coincide
     if (!producto && codigoItem) {
       [[producto]] = await connection.query(
         `SELECT id_producto FROM productos WHERE sku = ? LIMIT 1`,
@@ -122,7 +211,6 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
       );
     }
 
-    // Crear producto si no existe
     if (!producto) {
       const sku = codigoItem ||
         `AUTO${Date.now()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
@@ -133,9 +221,8 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
       producto = { id_producto: res.insertId };
     }
 
-    // Buscar o crear lote
-    const numeroLote = (item.lote || '').trim() || `LOTE-ING-${ingresoId}`;
-    const fechaVen   = (item.vencimiento || '').trim() || '2099-12-31';
+    const numeroLote    = (item.lote || '').trim() || `LOTE-ING-${ingresoId}`;
+    const fechaVen      = (item.vencimiento || '').trim() || '2099-12-31';
     const costoUnitario = parseFloat(item.valor_unitario) || 0;
 
     let [[lote]] = await connection.query(
@@ -153,7 +240,6 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
       lote = { id_lote: res.insertId };
     }
 
-    // Buscar existencia actual
     const [[existencia]] = await connection.query(
       `SELECT id_existencia, cantidad_disponible
        FROM existencias
@@ -162,7 +248,6 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
     );
 
     if (esDevolucion) {
-      // Devolución → restar del inventario (sin bajar de 0)
       if (existencia) {
         await connection.query(
           `UPDATE existencias
@@ -182,7 +267,6 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
          `Devolución: ${referencia}`, ingresoId, userId]
       );
     } else {
-      // Entrada → sumar al inventario
       if (existencia) {
         await connection.query(
           `UPDATE existencias
@@ -230,16 +314,31 @@ router.get('/', asyncHandler(async (req, res) => {
         i.created_at,
         i.updated_at,
         i.creado_por,
+        i.prefijo_factura,
+        i.numero_factura,
+        i.cufe,
+        i.fecha_recepcion,
+        i.observaciones,
+        i.numero_orden_compra,
+        i.sede,
+        i.bodega,
+        i.proveedor_nombre,
+        i.proveedor_nit,
+        i.proveedor_contacto,
+        i.proveedor_telefono,
+        i.proveedor_direccion,
+        i.total_bruto,
+        i.total_descuento,
+        i.subtotal_neto,
+        i.total_iva,
+        i.total_ingreso,
         u.nombre_completo AS creado_por_nombre
       FROM ingresos i
       LEFT JOIN usuarios u ON u.id_usuario = i.creado_por
       ORDER BY i.created_at DESC
     `);
 
-    res.json({
-      success: true,
-      data: ingresos
-    });
+    res.json({ success: true, data: ingresos });
   } finally {
     connection.release();
   }
@@ -251,35 +350,83 @@ router.get('/', asyncHandler(async (req, res) => {
 router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const { referencia, producto, cantidad, lote, fecha_vencimiento, estado } = req.body;
+    const {
+      referencia, cantidad, lote, fecha_vencimiento, estado,
+      prefijo_factura, numero_factura, cufe, fecha_recepcion, observaciones,
+      numero_orden_compra, sede, bodega,
+      proveedor_nombre, proveedor_nit, proveedor_contacto, proveedor_telefono, proveedor_direccion,
+      total_bruto, total_descuento, subtotal_neto, total_iva, total_ingreso,
+      items = [],
+      es_devolucion = false,
+    } = req.body;
+
+    const productoTexto = buildProductoTexto(req.body);
 
     const [result] = await connection.query(`
-      INSERT INTO ingresos
-        (referencia, producto, cantidad, lote, fecha_vencimiento, estado, fecha_ingreso, creado_por)
-      VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)
-    `, [referencia, producto, cantidad, lote || null, fecha_vencimiento || null, estado, req.user?.sub ?? null]);
+      INSERT INTO ingresos (
+        referencia, producto, cantidad, lote, fecha_vencimiento, estado,
+        fecha_ingreso, creado_por,
+        prefijo_factura, numero_factura, cufe, fecha_recepcion, observaciones,
+        numero_orden_compra, sede, bodega,
+        proveedor_nombre, proveedor_nit, proveedor_contacto, proveedor_telefono, proveedor_direccion,
+        total_bruto, total_descuento, subtotal_neto, total_iva, total_ingreso
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?,
+        NOW(), ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?
+      )
+    `, [
+      referencia, productoTexto, cantidad, lote || null, fecha_vencimiento || null, estado,
+      req.user?.sub ?? null,
+      prefijo_factura || null, numero_factura || null, cufe || null,
+      fecha_recepcion || null, observaciones || null,
+      numero_orden_compra || null, sede || null, bodega || null,
+      proveedor_nombre || null, proveedor_nit || null,
+      proveedor_contacto || null, proveedor_telefono || null, proveedor_direccion || null,
+      total_bruto ?? null, total_descuento ?? null, subtotal_neto ?? null,
+      total_iva ?? null, total_ingreso ?? null,
+    ]);
 
     const ingresoId = result.insertId;
-    const esDevolucion = referencia.startsWith('DEV-');
 
-    // Actualizar inventario cuando corresponda
+    // Insertar items en tabla estructurada
+    for (const item of items) {
+      await connection.query(`
+        INSERT INTO ingresos_items (
+          id_ingreso, codigo, nombre, laboratorio,
+          cantidad, valor_unitario, descuento_pct, descuento_valor, iva,
+          lote, fecha_vencimiento,
+          registro_invima, cum, consecutivo_cum, presentacion, temperatura, cumple
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        ingresoId,
+        item.codigo || null, item.nombre || null, item.laboratorio || null,
+        item.cantidad ?? 0, item.valor_unitario ?? 0,
+        item.descuento_pct ?? 0, item.descuento_valor ?? 0, item.iva ?? 0,
+        item.lote || null, item.fecha_vencimiento || null,
+        item.registro_invima || null, item.cum || null, item.consecutivo_cum || null,
+        item.presentacion || null, item.temperatura || null,
+        item.cumple != null ? (item.cumple ? 1 : 0) : null,
+      ]);
+    }
+
+    const esDevolucion = es_devolucion || referencia.startsWith('DEV-');
     const debeActualizar =
       estado === 'recibido' ||
-      estado === 'almacenado' ||
       (estado === 'cancelado' && esDevolucion);
 
     if (debeActualizar) {
       try {
-        await actualizarInventario(connection, producto, referencia, ingresoId, esDevolucion, req.user?.sub ?? null);
+        await actualizarInventario(connection, productoTexto, referencia, ingresoId, esDevolucion, req.user?.sub ?? null);
       } catch (invErr) {
         console.error('[ingresos] Error actualizando inventario:', invErr.message);
       }
     }
 
-    res.status(201).json({
-      success: true,
-      message: 'Ingreso creado exitosamente'
-    });
+    res.status(201).json({ success: true, message: 'Ingreso creado exitosamente' });
   } finally {
     connection.release();
   }
@@ -296,16 +443,14 @@ router.get('/:id', asyncHandler(async (req, res) => {
     `, [req.params.id]);
 
     if (!ingreso) {
-      return res.status(404).json({
-        success: false,
-        message: 'Ingreso no encontrado'
-      });
+      return res.status(404).json({ success: false, message: 'Ingreso no encontrado' });
     }
 
-    res.json({
-      success: true,
-      data: ingreso
-    });
+    const [items] = await connection.query(`
+      SELECT * FROM ingresos_items WHERE id_ingreso = ? ORDER BY id_item
+    `, [req.params.id]);
+
+    res.json({ success: true, data: { ...ingreso, items } });
   } finally {
     connection.release();
   }
@@ -326,10 +471,7 @@ router.put('/:id', asyncHandler(async (req, res) => {
       WHERE id_ingreso = ?
     `, [referencia, producto, cantidad, lote, fecha_vencimiento, estado, req.params.id]);
 
-    res.json({
-      success: true,
-      message: 'Ingreso actualizado exitosamente'
-    });
+    res.json({ success: true, message: 'Ingreso actualizado exitosamente' });
   } finally {
     connection.release();
   }
@@ -341,14 +483,8 @@ router.put('/:id', asyncHandler(async (req, res) => {
 router.delete('/:id', asyncHandler(async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    await connection.query(`
-      DELETE FROM ingresos WHERE id_ingreso = ?
-    `, [req.params.id]);
-
-    res.json({
-      success: true,
-      message: 'Ingreso eliminado exitosamente'
-    });
+    await connection.query(`DELETE FROM ingresos WHERE id_ingreso = ?`, [req.params.id]);
+    res.json({ success: true, message: 'Ingreso eliminado exitosamente' });
   } finally {
     connection.release();
   }

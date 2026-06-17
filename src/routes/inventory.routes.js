@@ -20,7 +20,9 @@ import {
 const movementSchema = z.object({
   tipo: z.enum([
     'entrada_compra', 'salida_venta', 'ajuste', 'traslado', 'devolucion_compra',
-    'devolucion_venta', 'merma', 'cuarentena', 'liberacion', 'destruccion'
+    'devolucion_venta', 'merma', 'cuarentena', 'liberacion', 'destruccion',
+    'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
+    'inventario_sobrante_fisico', 'bonificacion'
   ]),
   id_lote: z.number().int(),
   id_almacen_origen: z.number().int().optional().nullable(),

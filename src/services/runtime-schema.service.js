@@ -766,6 +766,65 @@ async function ensureIngresosSchema() {
     await runStatement(`ALTER TABLE productos MODIFY COLUMN consecutivo_cum INT NULL`);
     console.log('[schema] Columna consecutivo_cum convertida a INT');
   }
+
+  // ── Columnas estructuradas en ingresos (migración automática) ──────────────
+  if (!(await columnExists('ingresos', 'prefijo_factura'))) {
+    await runStatement(`
+      ALTER TABLE ingresos
+        ADD COLUMN IF NOT EXISTS prefijo_factura     VARCHAR(20)   NULL,
+        ADD COLUMN IF NOT EXISTS numero_factura      VARCHAR(50)   NULL,
+        ADD COLUMN IF NOT EXISTS cufe                VARCHAR(255)  NULL,
+        ADD COLUMN IF NOT EXISTS fecha_recepcion     DATE          NULL,
+        ADD COLUMN IF NOT EXISTS observaciones       TEXT          NULL,
+        ADD COLUMN IF NOT EXISTS numero_orden_compra VARCHAR(100)  NULL,
+        ADD COLUMN IF NOT EXISTS sede                VARCHAR(200)  NULL,
+        ADD COLUMN IF NOT EXISTS bodega              VARCHAR(200)  NULL,
+        ADD COLUMN IF NOT EXISTS proveedor_nombre    VARCHAR(200)  NULL,
+        ADD COLUMN IF NOT EXISTS proveedor_nit       VARCHAR(50)   NULL,
+        ADD COLUMN IF NOT EXISTS proveedor_contacto  VARCHAR(200)  NULL,
+        ADD COLUMN IF NOT EXISTS proveedor_telefono  VARCHAR(50)   NULL,
+        ADD COLUMN IF NOT EXISTS proveedor_direccion VARCHAR(300)  NULL,
+        ADD COLUMN IF NOT EXISTS total_bruto         DECIMAL(15,2) NULL,
+        ADD COLUMN IF NOT EXISTS total_descuento     DECIMAL(15,2) NULL,
+        ADD COLUMN IF NOT EXISTS subtotal_neto       DECIMAL(15,2) NULL,
+        ADD COLUMN IF NOT EXISTS total_iva           DECIMAL(15,2) NULL,
+        ADD COLUMN IF NOT EXISTS total_ingreso       DECIMAL(15,2) NULL
+    `);
+    console.log('[schema] Columnas estructuradas agregadas a ingresos');
+  }
+
+  // ── Tabla ingresos_items ───────────────────────────────────────────────────
+  if (!(await tableExists('ingresos_items'))) {
+    await runStatement(`
+      CREATE TABLE IF NOT EXISTS ingresos_items (
+        id_item            INT           NOT NULL AUTO_INCREMENT,
+        id_ingreso         INT           NOT NULL,
+        codigo             VARCHAR(100)  NULL,
+        nombre             VARCHAR(300)  NULL,
+        laboratorio        VARCHAR(200)  NULL,
+        cantidad           DECIMAL(15,4) NOT NULL DEFAULT 0,
+        valor_unitario     DECIMAL(15,4) NOT NULL DEFAULT 0,
+        descuento_pct      DECIMAL(8,4)  NOT NULL DEFAULT 0,
+        descuento_valor    DECIMAL(15,2) NOT NULL DEFAULT 0,
+        iva                DECIMAL(8,4)  NOT NULL DEFAULT 0,
+        lote               VARCHAR(100)  NULL,
+        fecha_vencimiento  DATE          NULL,
+        registro_invima    VARCHAR(100)  NULL,
+        cum                VARCHAR(100)  NULL,
+        consecutivo_cum    VARCHAR(100)  NULL,
+        presentacion       VARCHAR(200)  NULL,
+        temperatura        VARCHAR(100)  NULL,
+        cumple             TINYINT(1)    NULL,
+        PRIMARY KEY (id_item),
+        CONSTRAINT fk_ingresos_items_ingreso
+          FOREIGN KEY (id_ingreso) REFERENCES ingresos(id_ingreso)
+          ON DELETE CASCADE,
+        INDEX idx_ingresos_items_ingreso (id_ingreso)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Items detallados de cada ingreso Sebas'
+    `);
+    console.log('[schema] Tabla ingresos_items creada en runtime');
+  }
 }
 
 async function runEnsureRuntimeSchema() {
