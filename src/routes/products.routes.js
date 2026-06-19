@@ -42,7 +42,6 @@ const productSchema = z.object({
   temp_min: z.number().optional().nullable(),
   temp_max: z.number().optional().nullable(),
   iva_tasa: z.number().optional(),
-  regimen_proveedor: z.string().optional().nullable(),
   costo_referencia: z.number().optional(),
   precio_venta: z.number().optional(),
   stock_minimo: z.number().optional(),

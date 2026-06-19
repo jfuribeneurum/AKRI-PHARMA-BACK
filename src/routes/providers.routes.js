@@ -22,12 +22,13 @@ const providerSchema = z.object({
   nombres: z.string().optional().nullable(),
   apellidos: z.string().optional().nullable(),
   telefono: z.string().optional().nullable(),
-  email: z.string().email().optional().nullable(),
+  email: z.union([z.literal(''), z.string().email()]).optional().nullable(),
   ciudad: z.string().optional().nullable(),
   departamento: z.string().optional().nullable(),
   pais: z.string().optional().nullable(),
   direccion: z.string().optional().nullable(),
   observaciones: z.string().optional().nullable(),
+  regimen: z.string().optional().nullable(),
   activo: z.boolean().optional()
 });
 
