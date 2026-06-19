@@ -40,7 +40,7 @@ const SEED = [
 
   { grupo: 'tipo_movimiento_salida',   grupo_label: 'Tipo Movimiento Salida',     valor: 'inventario_faltante_fisico', etiqueta: 'Inventario faltante físico', orden: 1 },
   { grupo: 'tipo_movimiento_salida',   grupo_label: 'Tipo Movimiento Salida',     valor: 'disposicion_final',          etiqueta: 'Disposición final',          orden: 2 },
-  { grupo: 'tipo_movimiento_salida',   grupo_label: 'Tipo Movimiento Salida',     valor: 'movimiento_interno',         etiqueta: 'Movimiento interno',         orden: 3 },
+  { grupo: 'tipo_movimiento_salida',   grupo_label: 'Tipo Movimiento Salida',     valor: 'movimiento_interno',         etiqueta: 'Autoconsumo',                orden: 3 },
 
   { grupo: 'tipo_receptor',            grupo_label: 'Tipo de Receptor',           valor: 'paciente',        etiqueta: 'Paciente',        orden: 1 },
   { grupo: 'tipo_receptor',            grupo_label: 'Tipo de Receptor',           valor: 'representante',   etiqueta: 'Representante',   orden: 2 },
@@ -63,7 +63,7 @@ const SEED = [
 
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '0',    etiqueta: 'Excluido',  orden: 1 },
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '0.01', etiqueta: 'IVA (0%)',  orden: 2 },
-  { grupo: 'iva', grupo_label: 'IVA (%)', valor: '8',    etiqueta: 'IVA (8%)',  orden: 3 },
+  { grupo: 'iva', grupo_label: 'IVA (%)', valor: '5',    etiqueta: 'IVA (5%)',  orden: 3 },
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '19',   etiqueta: 'IVA (19%)', orden: 4 },
 
   { grupo: 'pais', grupo_label: 'País', valor: 'Colombia',                          etiqueta: 'Colombia',                          orden: 1   },

@@ -20,7 +20,7 @@ try {
   const nuevos = [
     { valor: 'inventario_faltante_fisico', etiqueta: 'Inventario faltante físico', orden: 1 },
     { valor: 'disposicion_final',          etiqueta: 'Disposición final',          orden: 2 },
-    { valor: 'movimiento_interno',         etiqueta: 'Movimiento interno',         orden: 3 },
+    { valor: 'movimiento_interno',         etiqueta: 'Autoconsumo',                orden: 3 },
   ];
   for (const p of nuevos) {
     await conn.query(
