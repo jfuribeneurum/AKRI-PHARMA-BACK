@@ -55,7 +55,7 @@ async function ensureProductExists(id) {
     `SELECT id_producto, id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo,
             concentracion, presentacion, unidad_medida, registro_invima, cum, consecutivo_cum,
             id_categoria, id_forma, codigo_atc, codigo_dci, clasificacion, id_laboratorio, tipo_producto,
-            mx_control, requiere_cadena_frio, temp_min, temp_max, iva_tasa, regimen_proveedor,
+            mx_control, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
             costo_referencia, precio_venta, stock_minimo, stock_maximo, punto_reorden, activo,
             fecha_creacion, fecha_modificacion, creado_por, modificado_por
      FROM productos
