@@ -673,6 +673,58 @@ async function ensureV19PurchaseRequestSchema() {
     `);
   }
 
+  if (await tableExists('solicitudes_compra_sedes_detalle')) {
+    if (
+      (await columnExists('solicitudes_compra_sedes_detalle', 'id_solicitud_compra_sede_detalle')) &&
+      !(await columnExists('solicitudes_compra_sedes_detalle', 'id_solicitud_compra_detalle'))
+    ) {
+      await runStatement(`
+        ALTER TABLE solicitudes_compra_sedes_detalle
+          CHANGE COLUMN id_solicitud_compra_sede_detalle id_solicitud_compra_detalle BIGINT NOT NULL AUTO_INCREMENT
+      `);
+      console.log('[schema] Columna id_solicitud_compra_sede_detalle renombrada a id_solicitud_compra_detalle');
+    }
+    if (!(await columnExists('solicitudes_compra_sedes_detalle', 'cantidad_atendida'))) {
+      await runStatement(`
+        ALTER TABLE solicitudes_compra_sedes_detalle
+          ADD COLUMN cantidad_atendida DECIMAL(14,3) NOT NULL DEFAULT 0 AFTER cantidad_solicitada
+      `);
+      console.log('[schema] Columna cantidad_atendida agregada a solicitudes_compra_sedes_detalle');
+    }
+  }
+
+  if (await tableExists('solicitudes_compra_sedes')) {
+    if (
+      (await columnExists('solicitudes_compra_sedes', 'id_usuario_revisa')) &&
+      !(await columnExists('solicitudes_compra_sedes', 'id_usuario_revision'))
+    ) {
+      await runStatement(`
+        ALTER TABLE solicitudes_compra_sedes
+          CHANGE COLUMN id_usuario_revisa id_usuario_revision INT DEFAULT NULL
+      `);
+      console.log('[schema] Columna id_usuario_revisa renombrada a id_usuario_revision');
+    }
+    if (!(await columnExists('solicitudes_compra_sedes', 'metadata'))) {
+      await runStatement(`
+        ALTER TABLE solicitudes_compra_sedes
+          ADD COLUMN metadata JSON DEFAULT NULL AFTER observaciones
+      `);
+      console.log('[schema] Columna metadata agregada a solicitudes_compra_sedes');
+    }
+    const [estadoColumn] = await query(
+      `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'solicitudes_compra_sedes' AND COLUMN_NAME = 'estado'`
+    );
+    if (estadoColumn?.COLUMN_TYPE && !estadoColumn.COLUMN_TYPE.includes("'cancelada'")) {
+      await runStatement(`
+        ALTER TABLE solicitudes_compra_sedes
+          MODIFY COLUMN estado ENUM('pendiente','revisada','aprobada','rechazada','atendida','cancelada')
+            NOT NULL DEFAULT 'pendiente'
+      `);
+      console.log('[schema] Valor cancelada agregado al enum estado de solicitudes_compra_sedes');
+    }
+  }
+
   if (!(await tableExists('sedes'))) {
     return;
   }
@@ -727,9 +779,9 @@ async function ensureIngresosSchema() {
     );
   }
 
-  if (await columnExists('productos', 'es_controlado')) {
-    await runStatement(`ALTER TABLE productos DROP COLUMN es_controlado`);
-    console.log('[schema] Columna es_controlado eliminada de productos');
+  if (!(await columnExists('productos', 'es_controlado'))) {
+    await runStatement(`ALTER TABLE productos ADD COLUMN es_controlado TINYINT(1) NOT NULL DEFAULT 0 AFTER mx_control`);
+    console.log('[schema] Columna es_controlado agregada a productos');
   }
 
   if (!(await columnExists('productos', 'codigo_dci'))) {

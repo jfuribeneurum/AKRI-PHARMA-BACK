@@ -41,6 +41,7 @@ export async function listFormulacionesHS({ search = '', page = 1, limit = 30, f
         f.fechaFormulacion,
         f.tipo,
         f.subtipo,
+        a.consecutivo                           AS consecutivo_atencion,
         TRIM(CONCAT(
           COALESCE(p.primer_nombre, ''), ' ',
           COALESCE(p.segundo_nombre, ''), ' ',
@@ -54,6 +55,7 @@ export async function listFormulacionesHS({ search = '', page = 1, limit = 30, f
      FROM suhc_new_tbl_formulacion f
      INNER JOIN tblpaciente p ON p.id = f.idPaciente
      LEFT JOIN suhc_new_tbl_formulacion_medicamentos fm ON fm.idFormulacion = f.Id
+     LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion
      ${whereClause}
      GROUP BY f.Id
      ORDER BY f.fechaFormulacion DESC
@@ -87,6 +89,7 @@ export async function getFormulacionHSById(idFormulacion) {
         f.fechaFormulacion,
         f.tipo,
         f.subtipo,
+        a.consecutivo       AS consecutivo_atencion,
         TRIM(CONCAT(
           COALESCE(p.primer_nombre, ''), ' ',
           COALESCE(p.segundo_nombre, ''), ' ',
@@ -101,6 +104,7 @@ export async function getFormulacionHSById(idFormulacion) {
         p.sexo              AS sexo_paciente
      FROM suhc_new_tbl_formulacion f
      INNER JOIN tblpaciente p ON p.id = f.idPaciente
+     LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion
      WHERE f.Id = ? AND f.tipo = 'medicine'`,
     [idFormulacion]
   );

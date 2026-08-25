@@ -47,7 +47,7 @@ export async function listAuditLog(filter = {}) {
   const limit = Math.max(1, Math.min(Number(filter.limit ?? 100), 500));
   const params = [];
   let sql = `SELECT
-      a.id_auditoria,
+      a.id_log AS id_auditoria,
       a.fecha_hora,
       a.id_usuario,
       u.nombre_completo AS usuario,
