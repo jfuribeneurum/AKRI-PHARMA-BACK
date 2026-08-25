@@ -34,7 +34,13 @@ medicamentosHsRouter.get(
                 m.principioActivo,
                 m.concentracion,
                 d.descripcion        AS forma_farmaceutica,
-                u.descripcion        AS unidad_dosificacion
+                u.descripcion        AS unidad_dosificacion,
+                (SELECT dci.dci
+                   FROM suhc_new_tbl_medicine_dci md
+                   JOIN suhc_new_tbl_dci dci ON dci.dci = md.dci
+                  WHERE md.idMedicamento = m.id
+                  ORDER BY md.dci
+                  LIMIT 1)          AS codigo_dci
            FROM suhc_new_tbl_medicine m
            LEFT JOIN suhc_new_tbl_maestrasdetalle d
                   ON d.id = m.idFormaFarmaceutica AND d.idMaestra = 1

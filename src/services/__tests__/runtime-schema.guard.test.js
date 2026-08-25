@@ -88,4 +88,14 @@ describe('runtime-schema.service source guards', () => {
       /columnExists\('dispensacion_hs_control',\s*'regimen'\)[\s\S]{0,80}ADD COLUMN regimen/
     );
   });
+
+  it('seeds the HealthSphere-only formas farmacéuticas so "Forma farmacéutica" can auto-fill for them', () => {
+    expect(source).toMatch(/FORMAS_FARMACEUTICAS_HS_SEED/);
+    expect(source).toMatch(/INSERT IGNORE INTO formas_farmaceuticas/);
+    // 39 forma types exist in HealthSphere with no local match at the time this was written.
+    const seedMatch = source.match(/FORMAS_FARMACEUTICAS_HS_SEED = \[([\s\S]*?)\n\];/);
+    expect(seedMatch).toBeTruthy();
+    const rowCount = (seedMatch[1].match(/^\s*\[/gm) ?? []).length;
+    expect(rowCount).toBe(39);
+  });
 });

@@ -926,6 +926,63 @@ async function ensureDispensacionHsControlSchema() {
   }
 }
 
+// Formas farmacéuticas que existen en el catálogo de HealthSphere pero no
+// en el catálogo local — sin ellas, "Forma farmacéutica" no puede
+// arrastrarse automáticamente al crear un producto enlazado a HS.
+const FORMAS_FARMACEUTICAS_HS_SEED = [
+  ['Solución para inhalación', 'SOL-INH', 'liquido', 0, 0, 0],
+  ['Crema vaginal', 'CR-VAG', 'semisolido', 0, 0, 0],
+  ['Elixir', 'ELIX', 'liquido', 0, 0, 0],
+  ['Emulsión', 'EMUL', 'liquido', 0, 0, 0],
+  ['Emulsión inyectable', 'EMUL-I', 'liquido', 1, 0, 0],
+  ['Emulsión oral', 'EMUL-O', 'liquido', 0, 0, 0],
+  ['Emulsión tópica', 'EMUL-TOP', 'semisolido', 0, 0, 0],
+  ['Gel intraocular', 'GEL-IO', 'semisolido', 1, 0, 0],
+  ['Gel oral', 'GEL-O', 'semisolido', 0, 0, 0],
+  ['Gel vaginal', 'GEL-VAG', 'semisolido', 0, 0, 0],
+  ['Granulado', 'GRAN', 'solido', 0, 0, 0],
+  ['Granulado efervescente', 'GRAN-EF', 'solido', 0, 0, 0],
+  ['Implante', 'IMPL', 'especial', 1, 0, 0],
+  ['Implante de liberación prolongada', 'IMPL-LP', 'especial', 1, 0, 0],
+  ['Jalea', 'JALEA', 'semisolido', 0, 0, 0],
+  ['Loción', 'LOC', 'liquido', 0, 0, 0],
+  ['Óvulo', 'OVULO', 'solido', 0, 0, 0],
+  ['Pasta', 'PASTA', 'semisolido', 0, 0, 0],
+  ['Polvo para inhalación', 'POLV-INH', 'solido', 0, 0, 0],
+  ['Polvo para reconstituir a suspensión oral', 'POLV-REC-SO', 'solido', 0, 1, 1],
+  ['Polvo tópico', 'POLV-TOP', 'solido', 0, 0, 0],
+  ['Pomada', 'POM', 'semisolido', 0, 0, 0],
+  ['Solución bucal', 'SOL-BUC', 'liquido', 0, 0, 0],
+  ['Solución bucofaríngea', 'SOL-BF', 'liquido', 0, 0, 0],
+  ['Solución nasal', 'SOL-NAS', 'liquido', 0, 0, 0],
+  ['Solución oftálmica', 'SOL-OFT', 'liquido', 1, 0, 0],
+  ['Solución ótica', 'SOL-OT', 'liquido', 0, 0, 0],
+  ['Solución para nebulización', 'SOL-NEB', 'liquido', 0, 0, 0],
+  ['Enema', 'ENEMA', 'liquido', 0, 0, 0],
+  ['Solución tópica', 'SOL-TOP', 'liquido', 0, 0, 0],
+  ['Supositorio', 'SUPO', 'solido', 0, 0, 0],
+  ['Suspensión nasal', 'SUS-NAS', 'liquido', 0, 0, 0],
+  ['Suspensión oftálmica', 'SUS-OFT', 'liquido', 1, 0, 0],
+  ['Suspensión para inhalación', 'SUS-INH', 'liquido', 0, 0, 0],
+  ['Suspensión para nebulización', 'SUS-NEB', 'liquido', 0, 0, 0],
+  ['Suspensión tópica', 'SUS-TOP', 'liquido', 0, 0, 0],
+  ['Ungüento oftálmico', 'UNG-OFT', 'semisolido', 1, 0, 0],
+  ['Ungüento proctológico', 'UNG-PROC', 'semisolido', 0, 0, 0],
+  ['Ungüento tópico', 'UNG-TOP', 'semisolido', 0, 0, 0]
+];
+
+async function ensureFormasFarmaceuticasHsSeed() {
+  if (!(await tableExists('formas_farmaceuticas'))) return;
+  for (const [nombre, abreviatura, tipoFisico, esEsteril, requiereReconstitucion, requiereRefrigeracion] of FORMAS_FARMACEUTICAS_HS_SEED) {
+    await runStatement(
+      `INSERT IGNORE INTO formas_farmaceuticas
+         (nombre, abreviatura, tipo_fisico, es_esteril, requiere_reconstitucion, requiere_refrigeracion_comun, es_activo)
+       VALUES (?, ?, ?, ?, ?, ?, 1)`,
+      [nombre, abreviatura, tipoFisico, esEsteril, requiereReconstitucion, requiereRefrigeracion]
+    );
+  }
+}
+
 async function runEnsureRuntimeSchema() {
   console.log('[schema] verificando compatibilidad de esquema en runtime');
 
@@ -941,6 +998,7 @@ async function runEnsureRuntimeSchema() {
   await tryStep('v19_purchase_requests', ensureV19PurchaseRequestSchema);
   await tryStep('ingresos_sebas', ensureIngresosSchema);
   await tryStep('dispensacion_hs_control', ensureDispensacionHsControlSchema);
+  await tryStep('formas_farmaceuticas_hs_seed', ensureFormasFarmaceuticasHsSeed);
 
   console.log('[schema] verificación de compatibilidad completada');
 }

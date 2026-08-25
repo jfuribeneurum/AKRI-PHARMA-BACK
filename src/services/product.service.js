@@ -4,7 +4,28 @@ import crypto from 'node:crypto';
 
 import { env } from '../config/env.js';
 import { query, withTransaction } from '../config/db.js';
+import { hsPool } from '../config/hs-db.js';
 import { HttpError } from '../utils/http-error.js';
+
+async function getMedicamentoHsNombres(ids) {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return {};
+
+  let connection;
+  try {
+    connection = await hsPool.getConnection();
+    const placeholders = uniqueIds.map(() => '?').join(',');
+    const [rows] = await connection.query(
+      `SELECT id, medicamento AS nombre FROM suhc_new_tbl_medicine WHERE id IN (${placeholders})`,
+      uniqueIds
+    );
+    return Object.fromEntries(rows.map(r => [r.id, r.nombre]));
+  } catch {
+    return {};
+  } finally {
+    if (connection) connection.release();
+  }
+}
 
 const MIME_EXTENSION_MAP = {
   'image/jpeg': 'jpg',
@@ -129,7 +150,7 @@ export async function listProducts(search = '', idLaboratorio = null, lote = '')
   const wildcard = `%${search}%`;
   const loteWildcard = `%${lote}%`;
 
-  return query(
+  const rows = await query(
     `SELECT
         p.id_producto,
         p.id_medicamento_hs,
@@ -165,16 +186,21 @@ export async function listProducts(search = '', idLaboratorio = null, lote = '')
         LEFT JOIN existencias e ON e.id_lote = l.id_lote
         GROUP BY l.id_producto
      ) stock ON stock.id_producto = p.id_producto
-     WHERE p.sku IS NOT NULL AND p.sku != ''
-       AND p.nombre_comercial IS NOT NULL AND p.nombre_comercial != ''
-       AND (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.principio_activo LIKE ? OR p.codigo_barras LIKE ? OR p.codigo_control LIKE ?)
+     WHERE (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.principio_activo LIKE ?
+             OR p.codigo_barras LIKE ? OR p.codigo_control LIKE ? OR p.id_medicamento_hs LIKE ?)
        AND (? IS NULL OR p.id_laboratorio = ?)
        AND (? = '' OR EXISTS (
              SELECT 1 FROM lotes l WHERE l.id_producto = p.id_producto AND l.numero_lote LIKE ?
            ))
      ORDER BY p.nombre_comercial ASC`,
-    [env.PUBLIC_UPLOAD_BASE_URL, search, wildcard, wildcard, wildcard, wildcard, wildcard, idLaboratorio, idLaboratorio, lote, loteWildcard]
+    [env.PUBLIC_UPLOAD_BASE_URL, search, wildcard, wildcard, wildcard, wildcard, wildcard, wildcard, idLaboratorio, idLaboratorio, lote, loteWildcard]
   );
+
+  const nombresHs = await getMedicamentoHsNombres(rows.map(r => r.id_medicamento_hs));
+  return rows.map(r => ({
+    ...r,
+    nombre_medicamento_hs: r.id_medicamento_hs ? (nombresHs[r.id_medicamento_hs] ?? null) : null
+  }));
 }
 
 
