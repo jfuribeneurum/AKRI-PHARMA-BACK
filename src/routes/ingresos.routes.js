@@ -43,6 +43,7 @@ const ingresoSchema = z.object({
   numero_orden_compra:  z.string().optional().nullable(),
   sede:                 z.string().optional().nullable(),
   bodega:               z.string().optional().nullable(),
+  id_almacen:           z.number().int().positive().optional().nullable(),
   // Proveedor
   proveedor_nombre:     z.string().optional().nullable(),
   proveedor_nit:        z.string().optional().nullable(),
@@ -152,19 +153,31 @@ function parsearMetaIngreso(texto) {
 // ──────────────────────────────────────────────
 // Actualización de inventario
 // ──────────────────────────────────────────────
-async function actualizarInventario(connection, productoTexto, referencia, ingresoId, esDevolucion, userId = null) {
+async function actualizarInventario(connection, productoTexto, referencia, ingresoId, esDevolucion, userId = null, idAlmacenActivo = null) {
   const items = parsearItemsIngreso(productoTexto);
   if (!items.length) return;
 
-  const meta = parsearMetaIngreso(productoTexto);
-  const bodegaNombre = meta['Bodega'] || meta['Sede'] || '';
+  let almacen = null;
 
-  let [[almacen]] = bodegaNombre
-    ? await connection.query(
+  if (idAlmacenActivo) {
+    [[almacen]] = await connection.query(
+      `SELECT id_almacen FROM almacenes WHERE id_almacen = ? AND activo = 1 LIMIT 1`,
+      [idAlmacenActivo]
+    );
+  }
+
+  if (!almacen) {
+    const meta = parsearMetaIngreso(productoTexto);
+    const bodegaNombre = meta['Bodega'] || meta['Sede'] || '';
+
+    if (bodegaNombre) {
+      const [rows] = await connection.query(
         `SELECT id_almacen FROM almacenes WHERE activo = 1 AND nombre LIKE ? LIMIT 1`,
         [`%${bodegaNombre}%`]
-      )
-    : [[null]];
+      );
+      almacen = rows[0] ?? null;
+    }
+  }
 
   if (!almacen) {
     [[almacen]] = await connection.query(
@@ -353,7 +366,7 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
     const {
       referencia, cantidad, lote, fecha_vencimiento, estado,
       prefijo_factura, numero_factura, cufe, fecha_recepcion, observaciones,
-      numero_orden_compra, sede, bodega,
+      numero_orden_compra, sede, bodega, id_almacen,
       proveedor_nombre, proveedor_nit, proveedor_contacto, proveedor_telefono, proveedor_direccion,
       total_bruto, total_descuento, subtotal_neto, total_iva, total_ingreso,
       items = [],
@@ -361,20 +374,21 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
     } = req.body;
 
     const productoTexto = buildProductoTexto(req.body);
+    const idAlmacenActivo = id_almacen ?? req.user?.id_almacen ?? null;
 
     const [result] = await connection.query(`
       INSERT INTO ingresos (
         referencia, producto, cantidad, lote, fecha_vencimiento, estado,
         fecha_ingreso, creado_por,
         prefijo_factura, numero_factura, cufe, fecha_recepcion, observaciones,
-        numero_orden_compra, sede, bodega,
+        numero_orden_compra, sede, bodega, id_almacen,
         proveedor_nombre, proveedor_nit, proveedor_contacto, proveedor_telefono, proveedor_direccion,
         total_bruto, total_descuento, subtotal_neto, total_iva, total_ingreso
       ) VALUES (
         ?, ?, ?, ?, ?, ?,
         NOW(), ?,
         ?, ?, ?, ?, ?,
-        ?, ?, ?,
+        ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?
       )
@@ -383,7 +397,7 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
       req.user?.sub ?? null,
       prefijo_factura || null, numero_factura || null, cufe || null,
       fecha_recepcion || null, observaciones || null,
-      numero_orden_compra || null, sede || null, bodega || null,
+      numero_orden_compra || null, sede || null, bodega || null, idAlmacenActivo,
       proveedor_nombre || null, proveedor_nit || null,
       proveedor_contacto || null, proveedor_telefono || null, proveedor_direccion || null,
       total_bruto ?? null, total_descuento ?? null, subtotal_neto ?? null,
@@ -420,7 +434,7 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
 
     if (debeActualizar) {
       try {
-        await actualizarInventario(connection, productoTexto, referencia, ingresoId, esDevolucion, req.user?.sub ?? null);
+        await actualizarInventario(connection, productoTexto, referencia, ingresoId, esDevolucion, req.user?.sub ?? null, idAlmacenActivo);
       } catch (invErr) {
         console.error('[ingresos] Error actualizando inventario:', invErr.message);
       }

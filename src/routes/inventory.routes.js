@@ -76,8 +76,8 @@ export const inventoryRouter = Router();
 inventoryRouter.get(
   '/lookups',
   authRequired,
-  asyncHandler(async (_req, res) => {
-    const data = await getInventoryLookups();
+  asyncHandler(async (req, res) => {
+    const data = await getInventoryLookups(req.user.id_sede ?? null);
     res.json({ success: true, data });
   })
 );
@@ -110,7 +110,7 @@ inventoryRouter.get(
   '/stock',
   authRequired,
   asyncHandler(async (req, res) => {
-    const data = await listStock(String(req.query.search ?? ''));
+    const data = await listStock(String(req.query.search ?? ''), req.user.id_almacen ?? null);
     res.json({ success: true, data });
   })
 );

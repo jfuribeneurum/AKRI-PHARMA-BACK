@@ -119,7 +119,7 @@ async function getLocationById(connection, idUbicacion) {
   return rows[0] ?? null;
 }
 
-export async function listStock(search = '') {
+export async function listStock(search = '', idAlmacen = null) {
   const wildcard = `%${search}%`;
 
   return query(
@@ -149,14 +149,18 @@ export async function listStock(search = '') {
      INNER JOIN almacenes a ON a.id_almacen = e.id_almacen
      INNER JOIN ubicaciones_almacen u ON u.id_ubicacion = e.id_ubicacion
      WHERE (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.codigo_barras LIKE ? OR l.numero_lote LIKE ?)
+       AND (? IS NULL OR e.id_almacen = ?)
      ORDER BY p.nombre_comercial, l.fecha_vencimiento ASC`,
-    [search, wildcard, wildcard, wildcard, wildcard]
+    [search, wildcard, wildcard, wildcard, wildcard, idAlmacen, idAlmacen]
   );
 }
 
-export async function getInventoryLookups() {
+export async function getInventoryLookups(idSede = null) {
   const almacenes = await query(
-    `SELECT id_almacen, codigo, nombre, tipo FROM almacenes WHERE activo = TRUE ORDER BY es_principal DESC, nombre ASC`
+    `SELECT id_almacen, codigo, nombre, tipo FROM almacenes
+      WHERE activo = TRUE AND (? IS NULL OR id_sede = ?)
+      ORDER BY es_principal DESC, nombre ASC`,
+    [idSede, idSede]
   );
 
   const ubicaciones = await query(
@@ -165,7 +169,9 @@ export async function getInventoryLookups() {
      FROM ubicaciones_almacen u
      INNER JOIN almacenes a ON a.id_almacen = u.id_almacen
      WHERE u.activo = TRUE
-     ORDER BY a.nombre ASC, u.nombre ASC`
+       AND (? IS NULL OR a.id_sede = ?)
+     ORDER BY a.nombre ASC, u.nombre ASC`,
+    [idSede, idSede]
   );
 
   return {

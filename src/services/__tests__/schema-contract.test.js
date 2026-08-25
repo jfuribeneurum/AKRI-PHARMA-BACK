@@ -34,6 +34,9 @@ const REQUIRED_COLUMNS = {
   log_auditoria: [
     'id_log', 'fecha_hora', 'id_usuario', 'id_sede', 'modulo', 'accion',
     'descripcion', 'resultado', 'request_id', 'endpoint', 'http_status', 'severidad'
+  ],
+  ingresos: [
+    'id_ingreso', 'referencia', 'sede', 'bodega', 'id_almacen'
   ]
 };
 
@@ -74,5 +77,23 @@ describe('database schema contract', () => {
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'solicitudes_compra_sedes' AND COLUMN_NAME = 'estado'`
     );
     expect(column?.COLUMN_TYPE ?? '').toContain("'cancelada'");
+  });
+
+  it('movimientos_inventario.tipo allows every value the movementSchema/createMovement accept', async () => {
+    // POST /inventory/movements validates `tipo` with a Zod enum that already
+    // includes these 5 values (Movimiento de Salida/Entrada in the frontend),
+    // but the DB column's ENUM never did — every insert 500'd with
+    // "Data truncated for column 'tipo' at row 1".
+    const [column] = await query(
+      `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimientos_inventario' AND COLUMN_NAME = 'tipo'`
+    );
+    const columnType = column?.COLUMN_TYPE ?? '';
+    for (const value of [
+      'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
+      'inventario_sobrante_fisico', 'bonificacion'
+    ]) {
+      expect(columnType, `movimientos_inventario.tipo is missing enum value '${value}'`).toContain(`'${value}'`);
+    }
   });
 });

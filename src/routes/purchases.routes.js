@@ -72,8 +72,8 @@ purchasesRouter.get(
 purchasesRouter.get(
   '/warehouses',
   authRequired,
-  asyncHandler(async (_req, res) => {
-    const data = await listWarehousesForPO();
+  asyncHandler(async (req, res) => {
+    const data = await listWarehousesForPO(req.user.id_sede ?? null);
     res.json({ success: true, data });
   })
 );

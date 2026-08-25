@@ -1,12 +1,14 @@
 import { query } from '../config/db.js';
 import { getFormulacionHSById } from './formulacion-hs.service.js';
 import { HttpError } from '../utils/http-error.js';
+import { recordProcessTrace } from './traceability.service.js';
 
 export async function getControlByFormulacion(idFormulacion) {
   return query(
     `SELECT id, id_formulacion_hs, id_med_formulacion_hs, nombre_medicamento,
             cantidad_formulada, cantidad_dispensada, estado,
-            fecha_formulacion, fecha_dispensacion, observaciones, id_producto
+            fecha_formulacion, fecha_dispensacion, observaciones, id_producto,
+            contrato, regimen
        FROM dispensacion_hs_control
       WHERE id_formulacion_hs = ?
       ORDER BY id ASC`,
@@ -24,7 +26,8 @@ export async function getControlStatusBatch(idFormulaciones) {
             SUM(estado = 'pendiente')    AS pendientes,
             SUM(estado = 'dispensado')   AS dispensados,
             SUM(estado = 'parcial')      AS parciales,
-            SUM(estado = 'cancelado')    AS cancelados
+            SUM(estado = 'cancelado')    AS cancelados,
+            MAX(fecha_dispensacion)      AS ultima_fecha_dispensacion
        FROM dispensacion_hs_control
       WHERE id_formulacion_hs IN (${placeholders})
       GROUP BY id_formulacion_hs`,
@@ -57,7 +60,7 @@ export async function listDispensacionesHS({ search = '', estado = '', page = 1,
             nombre_paciente, documento_paciente, nombre_medicamento, presentacion,
             cantidad_formulada, cantidad_dispensada, estado,
             fecha_formulacion, fecha_dispensacion, observaciones, id_producto,
-            fecha_creacion
+            contrato, regimen, fecha_creacion
        FROM dispensacion_hs_control
        ${whereClause}
       ORDER BY fecha_creacion DESC
@@ -66,7 +69,7 @@ export async function listDispensacionesHS({ search = '', estado = '', page = 1,
   );
 }
 
-export async function dispensarMedicamento(payload, userId) {
+export async function dispensarMedicamento(payload, userId, idSede = null) {
   const { id_formulacion_hs, id_med_formulacion_hs } = payload;
 
   const formulacion = await getFormulacionHSById(id_formulacion_hs);
@@ -122,12 +125,33 @@ export async function dispensarMedicamento(payload, userId) {
               fecha_dispensacion = NOW(),
               id_usuario = ?,
               id_producto = ?,
-              observaciones = CONCAT(COALESCE(observaciones,''), IF(? != '', CONCAT(IF(observaciones IS NOT NULL AND observaciones != '', ' | ', ''), ?), ''))
+              observaciones = CONCAT(COALESCE(observaciones,''), IF(? != '', CONCAT(IF(observaciones IS NOT NULL AND observaciones != '', ' | ', ''), ?), '')),
+              contrato = ?,
+              regimen = ?
         WHERE id = ?`,
       [nuevoTotal, nuevoEstado, userId ?? null, payload.id_producto ?? null,
-       payload.observaciones ?? '', payload.observaciones ?? '', existing[0].id]
+       payload.observaciones ?? '', payload.observaciones ?? '',
+       payload.contrato ?? null, payload.regimen ?? null, existing[0].id]
     );
     const [updated] = await query(`SELECT * FROM dispensacion_hs_control WHERE id = ?`, [existing[0].id]);
+
+    await recordProcessTrace(null, {
+      proceso: 'DISPENSACION',
+      subproceso: 'DISPENSAR_MEDICAMENTO_HS',
+      id_sede: idSede,
+      id_usuario: userId ?? null,
+      referencia_tipo: 'DISPENSACION_HS_CONTROL',
+      referencia_id: existing[0].id,
+      descripcion: `Dispensación actualizada: ${med.nombre_medicamento ?? ''} (${nuevoEstado})`,
+      payload_json: {
+        id_formulacion_hs,
+        id_med_formulacion_hs,
+        cantidad_dispensada: cantidadDispensada,
+        contrato: payload.contrato ?? null,
+        regimen: payload.regimen ?? null
+      }
+    });
+
     return updated;
   }
 
@@ -142,8 +166,9 @@ export async function dispensarMedicamento(payload, userId) {
        id_formulacion_hs, id_med_formulacion_hs, id_paciente_hs,
        nombre_paciente, documento_paciente, nombre_medicamento, presentacion,
        cantidad_formulada, cantidad_dispensada, estado,
-       fecha_formulacion, fecha_dispensacion, id_usuario, id_producto, observaciones
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?)`,
+       fecha_formulacion, fecha_dispensacion, id_usuario, id_producto, observaciones,
+       contrato, regimen
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?)`,
     [
       id_formulacion_hs,
       id_med_formulacion_hs,
@@ -158,11 +183,31 @@ export async function dispensarMedicamento(payload, userId) {
       fechaFormulacion,
       userId ?? null,
       payload.id_producto ?? null,
-      payload.observaciones ?? null
+      payload.observaciones ?? null,
+      payload.contrato ?? null,
+      payload.regimen ?? null
     ]
   );
 
   const [inserted] = await query(`SELECT * FROM dispensacion_hs_control WHERE id = ?`, [result.insertId]);
+
+  await recordProcessTrace(null, {
+    proceso: 'DISPENSACION',
+    subproceso: 'DISPENSAR_MEDICAMENTO_HS',
+    id_sede: idSede,
+    id_usuario: userId ?? null,
+    referencia_tipo: 'DISPENSACION_HS_CONTROL',
+    referencia_id: result.insertId,
+    descripcion: `Dispensación registrada: ${med.nombre_medicamento ?? ''} (${estado})`,
+    payload_json: {
+      id_formulacion_hs,
+      id_med_formulacion_hs,
+      cantidad_dispensada: cantidadDispensada,
+      contrato: payload.contrato ?? null,
+      regimen: payload.regimen ?? null
+    }
+  });
+
   return inserted;
 }
 

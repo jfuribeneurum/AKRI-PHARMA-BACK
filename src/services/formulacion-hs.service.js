@@ -20,8 +20,8 @@ export async function listFormulacionesHS({ search = '', page = 1, limit = 30, f
   const params     = [];
 
   if (hasSearch) {
-    conditions.push(`(p.documento LIKE ? OR p.primer_nombre LIKE ? OR p.primer_apellido LIKE ? OR p.segundo_apellido LIKE ?)`);
-    params.push(wild, wild, wild, wild);
+    conditions.push(`(p.documento LIKE ? OR p.primer_nombre LIKE ? OR p.primer_apellido LIKE ? OR p.segundo_apellido LIKE ? OR a.consecutivo LIKE ?)`);
+    params.push(wild, wild, wild, wild, wild);
   }
   if (fechaDesde) {
     conditions.push(`f.fechaFormulacion >= ?`);
@@ -67,6 +67,7 @@ export async function listFormulacionesHS({ search = '', page = 1, limit = 30, f
     `SELECT COUNT(DISTINCT f.Id) AS total
        FROM suhc_new_tbl_formulacion f
        INNER JOIN tblpaciente p ON p.id = f.idPaciente
+       LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion
        ${whereClause}`,
     params
   );

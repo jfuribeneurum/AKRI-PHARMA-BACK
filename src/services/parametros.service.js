@@ -61,6 +61,15 @@ const SEED = [
   { grupo: 'regimen_proveedor', grupo_label: 'Régimen Proveedor', valor: 'regimen_simple',     etiqueta: 'Régimen simple',     orden: 4 },
   { grupo: 'regimen_proveedor', grupo_label: 'Régimen Proveedor', valor: 'regimen_especial',   etiqueta: 'Régimen especial',   orden: 5 },
 
+  { grupo: 'regimen_paciente', grupo_label: 'Régimen (Paciente)', valor: 'contributivo', etiqueta: 'Contributivo', orden: 1 },
+  { grupo: 'regimen_paciente', grupo_label: 'Régimen (Paciente)', valor: 'subsidiado',   etiqueta: 'Subsidiado',   orden: 2 },
+  { grupo: 'regimen_paciente', grupo_label: 'Régimen (Paciente)', valor: 'especial',     etiqueta: 'Especial',     orden: 3 },
+  { grupo: 'regimen_paciente', grupo_label: 'Régimen (Paciente)', valor: 'excepcion',    etiqueta: 'Excepción',    orden: 4 },
+
+  { grupo: 'contrato', grupo_label: 'Contrato', valor: 'contrato_1', etiqueta: 'Contrato 1', orden: 1 },
+  { grupo: 'contrato', grupo_label: 'Contrato', valor: 'contrato_2', etiqueta: 'Contrato 2', orden: 2 },
+  { grupo: 'contrato', grupo_label: 'Contrato', valor: 'contrato_3', etiqueta: 'Contrato 3', orden: 3 },
+
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '0',    etiqueta: 'Excluido',  orden: 1 },
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '0.01', etiqueta: 'IVA (0%)',  orden: 2 },
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '5',    etiqueta: 'IVA (5%)',  orden: 3 },

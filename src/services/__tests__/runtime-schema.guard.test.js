@@ -63,4 +63,29 @@ describe('runtime-schema.service source guards', () => {
   it('ensures solicitudes_compra_sedes.estado allows the "cancelada" value', () => {
     expect(source).toMatch(/ENUM\('pendiente','revisada','aprobada','rechazada','atendida','cancelada'\)/);
   });
+
+  it('ensures movimientos_inventario.tipo includes the 5 friendly movement codes the API already accepts', () => {
+    for (const value of [
+      'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
+      'inventario_sobrante_fisico', 'bonificacion'
+    ]) {
+      expect(source).toContain(`'${value}'`);
+    }
+    expect(source).toMatch(/MODIFY COLUMN tipo ENUM\(/);
+  });
+
+  it('ensures ingresos.id_almacen exists, so ingreso stock movements can resolve the active almacén instead of guessing it from free text', () => {
+    expect(source).toMatch(
+      /columnExists\('ingresos',\s*'id_almacen'\)[\s\S]{0,80}ADD COLUMN id_almacen/
+    );
+  });
+
+  it('ensures dispensacion_hs_control.contrato and .regimen exist', () => {
+    expect(source).toMatch(
+      /columnExists\('dispensacion_hs_control',\s*'contrato'\)[\s\S]{0,80}ADD COLUMN contrato/
+    );
+    expect(source).toMatch(
+      /columnExists\('dispensacion_hs_control',\s*'regimen'\)[\s\S]{0,80}ADD COLUMN regimen/
+    );
+  });
 });

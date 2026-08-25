@@ -29,19 +29,21 @@ const dispensarSchema = z.object({
   id_med_formulacion_hs: z.number().int().positive(),
   cantidad_dispensada:   z.number().int().min(0).optional(),
   id_producto:           z.number().int().positive().optional().nullable(),
-  observaciones:         z.string().max(500).optional().nullable()
+  observaciones:         z.string().max(500).optional().nullable(),
+  contrato:              z.string().max(100).optional().nullable(),
+  regimen:               z.string().max(100).optional().nullable()
 });
 
 // POST /dispensacion-hs — dispensar o actualizar un medicamento de una formulación
 dispensacionHsRouter.post('/', validate(dispensarSchema), asyncHandler(async (req, res) => {
-  const userId = req.user?.id_usuario ?? null;
-  const record = await dispensarMedicamento(req.body, userId);
+  const userId = req.user?.sub ?? null;
+  const record = await dispensarMedicamento(req.body, userId, req.user?.id_sede ?? null);
   res.status(201).json({ success: true, data: record });
 }));
 
 // DELETE /dispensacion-hs/:id — cancelar
 dispensacionHsRouter.delete('/:id', asyncHandler(async (req, res) => {
-  const userId = req.user?.id_usuario ?? null;
+  const userId = req.user?.sub ?? null;
   const result = await cancelarDispensacion(Number(req.params.id), userId);
   res.json({ success: true, data: result });
 }));

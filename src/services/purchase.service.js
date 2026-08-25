@@ -74,14 +74,16 @@ async function nextNumeroOC(connection) {
   return buildNextFromRow(rows[0]);
 }
 
-export async function listWarehousesForPO() {
+export async function listWarehousesForPO(idSede = null) {
   return query(
     `SELECT a.id_almacen, a.codigo, a.nombre, a.tipo,
             s.id_sede, s.nombre AS sede_nombre, s.ciudad AS sede_ciudad, s.direccion AS sede_direccion
        FROM almacenes a
        INNER JOIN sedes s ON s.id_sede = a.id_sede
       WHERE a.activo = TRUE AND s.activo = TRUE
-      ORDER BY s.es_principal DESC, s.nombre ASC, a.es_principal DESC, a.nombre ASC`
+        AND (? IS NULL OR s.id_sede = ?)
+      ORDER BY s.es_principal DESC, s.nombre ASC, a.es_principal DESC, a.nombre ASC`,
+    [idSede, idSede]
   );
 }
 
@@ -279,6 +281,16 @@ export async function receivePurchaseOrder(idOc, payload, user) {
 
     if (Number(oc.id_sede) !== Number(site.id_sede)) {
       throw new HttpError(403, 'La orden de compra pertenece a otra sede');
+    }
+
+    const [almacenRows] = await connection.execute(
+      `SELECT id_sede FROM almacenes WHERE id_almacen = ? AND activo = TRUE`,
+      [payload.id_almacen]
+    );
+    const almacen = almacenRows[0];
+
+    if (!almacen || Number(almacen.id_sede) !== Number(site.id_sede)) {
+      throw new HttpError(403, 'El almacén seleccionado no pertenece a la sede de la orden de compra');
     }
 
     const [recepResult] = await connection.execute(

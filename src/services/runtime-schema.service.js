@@ -725,6 +725,34 @@ async function ensureV19PurchaseRequestSchema() {
     }
   }
 
+  if (await tableExists('movimientos_inventario')) {
+    const [tipoColumn] = await query(
+      `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimientos_inventario' AND COLUMN_NAME = 'tipo'`
+    );
+    // El endpoint POST /inventory/movements y createMovement() ya validan y
+    // manejan débito/crédito para estos 5 tipos (Movimiento de Salida /
+    // Entrada en el frontend), pero el ENUM de la columna nunca los incluyó,
+    // así que cada insert fallaba con "Data truncated for column 'tipo'".
+    const requiredValues = [
+      'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
+      'inventario_sobrante_fisico', 'bonificacion'
+    ];
+    const missing = requiredValues.filter((value) => !tipoColumn?.COLUMN_TYPE?.includes(`'${value}'`));
+    if (missing.length) {
+      await runStatement(`
+        ALTER TABLE movimientos_inventario
+          MODIFY COLUMN tipo ENUM(
+            'entrada_compra','salida_venta','ajuste','traslado','devolucion_compra',
+            'devolucion_venta','merma','cuarentena','liberacion','destruccion',
+            'inventario_faltante_fisico','disposicion_final','movimiento_interno',
+            'inventario_sobrante_fisico','bonificacion'
+          ) NOT NULL
+      `);
+      console.log(`[schema] Valores agregados al enum tipo de movimientos_inventario: ${missing.join(', ')}`);
+    }
+  }
+
   if (!(await tableExists('sedes'))) {
     return;
   }
@@ -845,6 +873,11 @@ async function ensureIngresosSchema() {
     console.log('[schema] Columnas estructuradas agregadas a ingresos');
   }
 
+  if (!(await columnExists('ingresos', 'id_almacen'))) {
+    await runStatement(`ALTER TABLE ingresos ADD COLUMN id_almacen INT NULL AFTER bodega`);
+    console.log('[schema] Columna id_almacen agregada a ingresos');
+  }
+
   // ── Tabla ingresos_items ───────────────────────────────────────────────────
   if (!(await tableExists('ingresos_items'))) {
     await runStatement(`
@@ -879,6 +912,20 @@ async function ensureIngresosSchema() {
   }
 }
 
+async function ensureDispensacionHsControlSchema() {
+  if (!(await tableExists('dispensacion_hs_control'))) return;
+
+  if (!(await columnExists('dispensacion_hs_control', 'contrato'))) {
+    await runStatement(`ALTER TABLE dispensacion_hs_control ADD COLUMN contrato VARCHAR(100) NULL AFTER observaciones`);
+    console.log('[schema] Columna contrato agregada a dispensacion_hs_control');
+  }
+
+  if (!(await columnExists('dispensacion_hs_control', 'regimen'))) {
+    await runStatement(`ALTER TABLE dispensacion_hs_control ADD COLUMN regimen VARCHAR(100) NULL AFTER contrato`);
+    console.log('[schema] Columna regimen agregada a dispensacion_hs_control');
+  }
+}
+
 async function runEnsureRuntimeSchema() {
   console.log('[schema] verificando compatibilidad de esquema en runtime');
 
@@ -893,6 +940,7 @@ async function runEnsureRuntimeSchema() {
   await tryStep('v20_role_usabilities', ensureV20RoleUsabilities);
   await tryStep('v19_purchase_requests', ensureV19PurchaseRequestSchema);
   await tryStep('ingresos_sebas', ensureIngresosSchema);
+  await tryStep('dispensacion_hs_control', ensureDispensacionHsControlSchema);
 
   console.log('[schema] verificación de compatibilidad completada');
 }

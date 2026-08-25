@@ -202,6 +202,31 @@ function resolveActiveSite(access = [], currentSiteId = null, requestedSiteId = 
   return Number(preferred?.id_sede ?? access[0]?.id_sede ?? numericCurrent ?? null);
 }
 
+async function getSedeAlmacenes(idSede) {
+  if (!idSede) return [];
+  return query(
+    `SELECT id_almacen, codigo, nombre, tipo, es_principal
+       FROM almacenes
+      WHERE id_sede = ? AND activo = TRUE
+      ORDER BY es_principal DESC, nombre ASC`,
+    [idSede]
+  );
+}
+
+function resolveActiveAlmacen(almacenes = [], currentAlmacenId = null, requestedAlmacenId = null) {
+  const authorized = new Set(almacenes.map((row) => Number(row.id_almacen)));
+  const numericRequested = requestedAlmacenId ? Number(requestedAlmacenId) : null;
+  if (numericRequested && authorized.has(numericRequested)) {
+    return numericRequested;
+  }
+  const numericCurrent = currentAlmacenId ? Number(currentAlmacenId) : null;
+  if (numericCurrent && authorized.has(numericCurrent)) {
+    return numericCurrent;
+  }
+  const preferred = almacenes.find((row) => Number(row.es_principal) === 1 || row.es_principal === true);
+  return Number(preferred?.id_almacen ?? almacenes[0]?.id_almacen ?? numericCurrent ?? null) || null;
+}
+
 async function syncUserCurrentSite(user, activeSiteId) {
   if (!activeSiteId) {
     return user;
@@ -263,6 +288,7 @@ function issueToken({ user, usabilities, siteSummary }) {
       sede: siteSummary.sede_nombre,
       sede_codigo: siteSummary.sede_codigo,
       sede_es_principal: Boolean(siteSummary.es_principal),
+      id_almacen: user.id_almacen_principal ?? null,
       name: user.nombre_completo,
       usabilities
     },
@@ -291,6 +317,7 @@ async function buildAuthResponse(user, requestedSiteId = null) {
 
   const refreshedUser = await syncUserCurrentSite(user, activeSiteId);
   const siteSummary = await getSiteSummary(activeSiteId, refreshedUser.id_almacen_principal);
+  const almacenes = await getSedeAlmacenes(activeSiteId);
   const usabilities = await getRoleUsabilities(refreshedUser.id_rol);
   const permissions = buildPermissions(refreshedUser);
   const token = issueToken({ user: refreshedUser, usabilities, siteSummary });
@@ -312,6 +339,8 @@ async function buildAuthResponse(user, requestedSiteId = null) {
       sede_es_principal: Boolean(siteSummary.es_principal),
       id_almacen_principal: siteSummary.id_almacen_principal ?? refreshedUser.id_almacen_principal,
       almacen_principal: siteSummary.almacen_nombre,
+      almacenes,
+      almacen_selection_required: almacenes.length > 1,
       access,
       permissions,
       usabilities
@@ -346,3 +375,28 @@ export async function selectSiteSession({ userId, id_sede }) {
   }
   return buildAuthResponse(user, id_sede);
 }
+
+export async function selectAlmacenSession({ userId, id_almacen }) {
+  const user = await getBaseUserById(userId);
+  if (!user || !user.es_activo) {
+    throw new HttpError(404, 'Usuario no encontrado o inactivo');
+  }
+  if (!id_almacen) {
+    throw new HttpError(400, 'Debes seleccionar un almacén');
+  }
+
+  const almacenes = await getSedeAlmacenes(user.id_sede);
+  const isAuthorized = almacenes.some((a) => Number(a.id_almacen) === Number(id_almacen));
+  if (!isAuthorized) {
+    throw new HttpError(403, 'El almacén seleccionado no pertenece a la sede activa');
+  }
+
+  await query(
+    `UPDATE usuarios SET id_almacen_principal = ? WHERE id_usuario = ?`,
+    [id_almacen, userId]
+  );
+
+  return buildAuthResponse({ ...user, id_almacen_principal: id_almacen }, user.id_sede);
+}
+
+export { getSedeAlmacenes };
