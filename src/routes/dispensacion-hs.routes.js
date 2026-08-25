@@ -31,7 +31,15 @@ const dispensarSchema = z.object({
   id_producto:           z.number().int().positive().optional().nullable(),
   observaciones:         z.string().max(500).optional().nullable(),
   contrato:              z.string().max(100).optional().nullable(),
-  regimen:               z.string().max(100).optional().nullable()
+  regimen:               z.string().max(100).optional().nullable(),
+  // Foto del estado que el operario vio en pantalla al confirmar la entrega,
+  // para dejar trazabilidad de cuánto quedaba pendiente/faltante en ese momento.
+  // Pendiente = formulada - histórico ya dispensado (antes de esta acción).
+  // Faltante  = formulada - lo que se está entregando ahora (esta acción).
+  cantidad_pendiente_antes: z.number().int().min(0).optional().nullable(),
+  cantidad_faltante:        z.number().int().min(0).optional().nullable(),
+  // Sobrescritura manual y libre del acumulado de "Cant. dispensada" desde el modal.
+  cantidad_dispensada_total_override: z.number().int().min(0).optional().nullable()
 });
 
 // POST /dispensacion-hs — dispensar o actualizar un medicamento de una formulación

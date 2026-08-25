@@ -84,9 +84,14 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
 
   const cantidadDispensada = Number(payload.cantidad_dispensada ?? med.cantidad);
   const cantidadFormulada  = Number(med.cantidad);
+  // Primera dispensación de este medicamento: si viene un acumulado manual,
+  // ese es el valor real que queda guardado (no el delta de "control de entrega").
+  const cantidadInicial = payload.cantidad_dispensada_total_override != null
+    ? Number(payload.cantidad_dispensada_total_override)
+    : cantidadDispensada;
   let estado = 'dispensado';
-  if (cantidadDispensada === 0) estado = 'pendiente';
-  else if (cantidadDispensada < cantidadFormulada) estado = 'parcial';
+  if (cantidadInicial === 0) estado = 'pendiente';
+  else if (cantidadInicial < cantidadFormulada) estado = 'parcial';
 
   const existing = await query(
     `SELECT id FROM dispensacion_hs_control WHERE id_formulacion_hs = ? AND id_med_formulacion_hs = ? LIMIT 1`,
@@ -107,13 +112,23 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
     const formulado     = Number(current.cantidad_formulada);
     const restante      = formulado - yaDispensado;
 
-    if (cantidadDispensada > restante) {
-      throw new HttpError(400,
-        `Solo quedan ${restante} unidad(es) por dispensar de las ${formulado} formuladas. No se puede superar esa cantidad.`
-      );
+    const tieneOverride = payload.cantidad_dispensada_total_override != null;
+    let nuevoTotal;
+    if (tieneOverride) {
+      nuevoTotal = Number(payload.cantidad_dispensada_total_override);
+      if (nuevoTotal > formulado) {
+        throw new HttpError(400,
+          `No se puede fijar un acumulado (${nuevoTotal}) mayor a lo formulado (${formulado}).`
+        );
+      }
+    } else {
+      if (cantidadDispensada > restante) {
+        throw new HttpError(400,
+          `Solo quedan ${restante} unidad(es) por dispensar de las ${formulado} formuladas. No se puede superar esa cantidad.`
+        );
+      }
+      nuevoTotal = yaDispensado + cantidadDispensada;
     }
-
-    const nuevoTotal = yaDispensado + cantidadDispensada;
     let nuevoEstado  = 'parcial';
     if (nuevoTotal >= formulado) nuevoEstado = 'dispensado';
     if (nuevoTotal === 0)        nuevoEstado = 'pendiente';
@@ -142,11 +157,16 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
       id_usuario: userId ?? null,
       referencia_tipo: 'DISPENSACION_HS_CONTROL',
       referencia_id: existing[0].id,
-      descripcion: `Dispensación actualizada: ${med.nombre_medicamento ?? ''} (${nuevoEstado})`,
+      descripcion: tieneOverride
+        ? `Dispensación actualizada con acumulado manual: ${med.nombre_medicamento ?? ''} (${nuevoEstado})`
+        : `Dispensación actualizada: ${med.nombre_medicamento ?? ''} (${nuevoEstado})`,
       payload_json: {
         id_formulacion_hs,
         id_med_formulacion_hs,
         cantidad_dispensada: cantidadDispensada,
+        cantidad_dispensada_total_override: tieneOverride ? nuevoTotal : null,
+        cantidad_pendiente_antes: payload.cantidad_pendiente_antes ?? null,
+        cantidad_faltante: payload.cantidad_faltante ?? null,
         contrato: payload.contrato ?? null,
         regimen: payload.regimen ?? null
       }
@@ -155,9 +175,9 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
     return updated;
   }
 
-  if (cantidadDispensada > cantidadFormulada) {
+  if (cantidadInicial > cantidadFormulada) {
     throw new HttpError(400,
-      `No se puede dispensar ${cantidadDispensada} unidades. La cantidad formulada es ${cantidadFormulada}.`
+      `No se puede dispensar ${cantidadInicial} unidades. La cantidad formulada es ${cantidadFormulada}.`
     );
   }
 
@@ -178,7 +198,7 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
       med.nombre_medicamento ?? '',
       med.presentacion ?? null,
       cantidadFormulada,
-      cantidadDispensada,
+      cantidadInicial,
       estado,
       fechaFormulacion,
       userId ?? null,
@@ -198,11 +218,16 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
     id_usuario: userId ?? null,
     referencia_tipo: 'DISPENSACION_HS_CONTROL',
     referencia_id: result.insertId,
-    descripcion: `Dispensación registrada: ${med.nombre_medicamento ?? ''} (${estado})`,
+    descripcion: payload.cantidad_dispensada_total_override != null
+      ? `Dispensación registrada con acumulado manual: ${med.nombre_medicamento ?? ''} (${estado})`
+      : `Dispensación registrada: ${med.nombre_medicamento ?? ''} (${estado})`,
     payload_json: {
       id_formulacion_hs,
       id_med_formulacion_hs,
       cantidad_dispensada: cantidadDispensada,
+      cantidad_dispensada_total_override: payload.cantidad_dispensada_total_override ?? null,
+      cantidad_pendiente_antes: payload.cantidad_pendiente_antes ?? null,
+      cantidad_faltante: payload.cantidad_faltante ?? null,
       contrato: payload.contrato ?? null,
       regimen: payload.regimen ?? null
     }
