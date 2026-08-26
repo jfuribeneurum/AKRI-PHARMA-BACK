@@ -1,4 +1,5 @@
 import { hsPool } from '../config/hs-db.js';
+import { query } from '../config/db.js';
 
 async function hsQuery(sql, params = []) {
   let connection;
@@ -133,5 +134,25 @@ export async function getFormulacionHSById(idFormulacion) {
     [idFormulacion]
   );
 
-  return { ...formulacion, medicamentos };
+  // fm.idMedicamento es el id del medicamento en HealthSphere, no el
+  // id_producto local — son dos bases de datos distintas. Se resuelve aquí
+  // el id_producto real (si el medicamento ya está enlazado en Maestro) para
+  // que el modal de dispensación pueda consultar/descontar el inventario
+  // local correcto, en vez de usar el id de HS como si fuera un id_producto.
+  const idsHs = [...new Set(medicamentos.map(m => m.idMedicamento).filter(Boolean))];
+  let productoPorIdHs = {};
+  if (idsHs.length) {
+    const placeholders = idsHs.map(() => '?').join(',');
+    const rows = await query(
+      `SELECT id_medicamento_hs, id_producto FROM productos WHERE id_medicamento_hs IN (${placeholders})`,
+      idsHs
+    );
+    productoPorIdHs = Object.fromEntries(rows.map(r => [r.id_medicamento_hs, r.id_producto]));
+  }
+  const medicamentosEnriquecidos = medicamentos.map(m => ({
+    ...m,
+    idProductoLocal: productoPorIdHs[m.idMedicamento] ?? null
+  }));
+
+  return { ...formulacion, medicamentos: medicamentosEnriquecidos };
 }

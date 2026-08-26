@@ -662,6 +662,8 @@ export async function getStockByProductId(idProducto) {
         l.id_lote,
         l.numero_lote,
         l.fecha_vencimiento,
+        e.id_ubicacion,
+        e.id_almacen,
         a.nombre AS almacen,
         ROUND(COALESCE(e.cantidad_disponible, 0), 3) AS cantidad_disponible,
         DATEDIFF(l.fecha_vencimiento, CURRENT_DATE()) AS dias_para_vencer,

@@ -6,7 +6,8 @@ import { asyncHandler } from '../utils/async-handler.js';
 import {
   listDispensacionesHS,
   dispensarMedicamento,
-  cancelarDispensacion
+  cancelarDispensacion,
+  getHistorialEntregas
 } from '../services/dispensacion-hs.service.js';
 
 export const dispensacionHsRouter = Router();
@@ -21,6 +22,12 @@ dispensacionHsRouter.get('/', asyncHandler(async (req, res) => {
   const limit  = Math.min(100, Math.max(5, Number(req.query.limit ?? 50)));
 
   const data = await listDispensacionesHS({ search, estado, page, limit });
+  res.json({ success: true, data });
+}));
+
+// GET /dispensacion-hs/formulacion/:id/historial — entregas ya realizadas
+dispensacionHsRouter.get('/formulacion/:id/historial', asyncHandler(async (req, res) => {
+  const data = await getHistorialEntregas(Number(req.params.id));
   res.json({ success: true, data });
 }));
 
@@ -39,7 +46,14 @@ const dispensarSchema = z.object({
   cantidad_pendiente_antes: z.number().int().min(0).optional().nullable(),
   cantidad_faltante:        z.number().int().min(0).optional().nullable(),
   // Sobrescritura manual y libre del acumulado de "Cant. dispensada" desde el modal.
-  cantidad_dispensada_total_override: z.number().int().min(0).optional().nullable()
+  cantidad_dispensada_total_override: z.number().int().min(0).optional().nullable(),
+  // Lotes elegidos para cubrir "Control de entrega" — de dónde sale físicamente
+  // el inventario. Obligatorio cuando cantidad_dispensada > 0 (se valida en el service).
+  lotes: z.array(z.object({
+    id_lote:      z.number().int().positive(),
+    id_ubicacion: z.number().int().positive(),
+    cantidad:     z.number().int().positive()
+  })).optional()
 });
 
 // POST /dispensacion-hs — dispensar o actualizar un medicamento de una formulación
