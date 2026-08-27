@@ -22,7 +22,7 @@ vi.mock('../traceability.service.js', () => ({
 const { query, withTransaction } = await import('../../config/db.js');
 const { getFormulacionHSById } = await import('../formulacion-hs.service.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
-const { dispensarMedicamento, getControlStatusBatch, getHistorialEntregas } = await import('../dispensacion-hs.service.js');
+const { dispensarMedicamento, getControlStatusBatch, getHistorialEntregas, anularEntregaHS } = await import('../dispensacion-hs.service.js');
 
 function mockFormulacion() {
   return {
@@ -318,7 +318,8 @@ describe('dispensacion-hs.service getHistorialEntregas', () => {
       ])
       .mockResolvedValueOnce([
         { id_movimiento: 324, referencia_id: 15, fecha_hora: '2026-08-26T21:31:19.000Z', cantidad: 2, numero_lote: 'LOTE-TEST-ABC-01', almacen: 'Almacén Principal', usuario: 'Akri Admin Sistema' }
-      ]);
+      ])
+      .mockResolvedValueOnce([]);
     const result = await getHistorialEntregas(517);
     expect(result).toEqual([{
       id_movimiento: 324, referencia_id: 15, fecha_hora: '2026-08-26T21:31:19.000Z', cantidad: 2,
@@ -329,5 +330,121 @@ describe('dispensacion-hs.service getHistorialEntregas', () => {
     const [movimientosSql, movimientosParams] = query.mock.calls[1];
     expect(movimientosSql).toMatch(/referencia_tipo = 'DISPENSACION_HS_CONTROL'/);
     expect(movimientosParams).toEqual([15]);
+  });
+
+  it('excludes a movimiento that already has an anulación linked to it', async () => {
+    query
+      .mockResolvedValueOnce([
+        { id: 15, id_med_formulacion_hs: 548, nombre_medicamento: 'ABACAVIR 300 MG TABLETA RECUBIERTA' }
+      ])
+      .mockResolvedValueOnce([
+        { id_movimiento: 324, referencia_id: 15, fecha_hora: '2026-08-26T21:31:19.000Z', cantidad: 2, numero_lote: 'LOTE-TEST-ABC-01', almacen: 'Almacén Principal', usuario: 'Akri Admin Sistema' },
+        { id_movimiento: 325, referencia_id: 15, fecha_hora: '2026-08-26T22:00:00.000Z', cantidad: 3, numero_lote: 'LOTE-TEST-ABC-02', almacen: 'Almacén Principal', usuario: 'Akri Admin Sistema' }
+      ])
+      .mockResolvedValueOnce([{ referencia_id: 324 }]);
+
+    const result = await getHistorialEntregas(517);
+
+    expect(result.map(r => r.id_movimiento)).toEqual([325]);
+    const [anulacionesSql, anulacionesParams] = query.mock.calls[2];
+    expect(anulacionesSql).toMatch(/referencia_tipo = 'ANULACION_DISPENSACION_HS'/);
+    expect(anulacionesParams).toEqual([324, 325]);
+  });
+});
+
+// El botón "X" del histórico anula una entrega puntual: repone el
+// inventario, revierte controlados_libro si aplica, resta lo anulado del
+// acumulado cacheado y deja trazabilidad de qué usuario lo hizo. El
+// movimiento original nunca se borra ni se modifica (ledger append-only).
+describe('dispensacion-hs.service anularEntregaHS', () => {
+  beforeEach(() => {
+    withTransaction.mockClear();
+    mockConnection.execute.mockReset();
+    recordProcessTrace.mockReset();
+  });
+
+  function mockMovimiento(overrides = {}) {
+    return {
+      id_movimiento: 324,
+      referencia_id: 15,
+      referencia_tipo: 'DISPENSACION_HS_CONTROL',
+      id_producto: 7,
+      id_lote: 3,
+      id_almacen_origen: 1,
+      id_ubicacion_origen: 1,
+      cantidad: 5,
+      costo_unitario: 100,
+      ...overrides
+    };
+  }
+
+  it('replenishes existencias and inserts a reversal movimiento referencing the original', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento/, () => [[mockMovimiento()]]],
+      [/referencia_tipo = 'ANULACION_DISPENSACION_HS' AND referencia_id = \?/, () => [[]]],
+      [/SELECT id, cantidad_formulada, cantidad_dispensada FROM dispensacion_hs_control/, () => [[{ id: 15, cantidad_formulada: 10, cantidad_dispensada: 5 }]]],
+      [/SELECT id_existencia, cantidad_disponible FROM existencias/, () => [[{ id_existencia: 500, cantidad_disponible: 20 }]]],
+      [/SELECT es_controlado FROM productos/, () => [[{ es_controlado: 0 }]]]
+    ]);
+
+    const result = await anularEntregaHS(324, 9, 3);
+
+    const updateExistRow = mockConnection.execute.mock.calls.find(([sql]) => /UPDATE existencias SET cantidad_disponible/.test(sql));
+    expect(updateExistRow[1]).toEqual([25, 500]);
+
+    const reversalCall = mockConnection.execute.mock.calls.find(([sql]) => /INSERT INTO movimientos_inventario/.test(sql));
+    expect(reversalCall[0]).toMatch(/'devolucion_venta'/);
+    expect(reversalCall[0]).toMatch(/'ANULACION_DISPENSACION_HS'/);
+    expect(reversalCall[1]).toEqual(expect.arrayContaining([7, 3, 1, 1, 5, 100, 324]));
+
+    expect(mockConnection.execute.mock.calls.some(([sql]) => /INSERT INTO controlados_libro/.test(sql))).toBe(false);
+
+    const controlUpdate = mockConnection.execute.mock.calls.find(([sql]) => /UPDATE dispensacion_hs_control SET cantidad_dispensada/.test(sql));
+    expect(controlUpdate[1]).toEqual([0, 'pendiente', 15]);
+
+    expect(result).toMatchObject({ id_movimiento: 324, cantidad_repuesta: 5, cantidad_dispensada: 0, estado: 'pendiente' });
+
+    expect(recordProcessTrace).toHaveBeenCalledTimes(1);
+    const [connectionArg, entry] = recordProcessTrace.mock.calls[0];
+    expect(connectionArg).toBe(mockConnection);
+    expect(entry.id_usuario).toBe(9);
+    expect(entry.id_sede).toBe(3);
+    expect(entry.referencia_id).toBe(15);
+    expect(entry.payload_json).toMatchObject({ id_movimiento_anulado: 324, cantidad_repuesta: 5 });
+  });
+
+  it('reverses controlados_libro when the product is es_controlado', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento/, () => [[mockMovimiento()]]],
+      [/referencia_tipo = 'ANULACION_DISPENSACION_HS' AND referencia_id = \?/, () => [[]]],
+      [/SELECT id, cantidad_formulada, cantidad_dispensada FROM dispensacion_hs_control/, () => [[{ id: 15, cantidad_formulada: 10, cantidad_dispensada: 5 }]]],
+      [/SELECT id_existencia, cantidad_disponible FROM existencias/, () => [[{ id_existencia: 500, cantidad_disponible: 20 }]]],
+      [/SELECT es_controlado FROM productos/, () => [[{ es_controlado: 1 }]]]
+    ]);
+
+    await anularEntregaHS(324, 9, 3);
+
+    const libroCall = mockConnection.execute.mock.calls.find(([sql]) => /INSERT INTO controlados_libro/.test(sql));
+    expect(libroCall).toBeTruthy();
+    expect(libroCall[0]).toMatch(/'entrada'/);
+    expect(libroCall[1]).toEqual([7, 3, 5, 20, 25, 324, 9, 'Reingreso por anulación de entrega']);
+  });
+
+  it('rejects when the movimiento was already anulled', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento/, () => [[mockMovimiento()]]],
+      [/referencia_tipo = 'ANULACION_DISPENSACION_HS' AND referencia_id = \?/, () => [[{ id_movimiento: 900 }]]]
+    ]);
+
+    await expect(anularEntregaHS(324, 9, 3)).rejects.toThrow(/ya fue anulada/);
+    expect(mockConnection.execute.mock.calls.some(([sql]) => /UPDATE existencias/.test(sql))).toBe(false);
+  });
+
+  it('rejects when the movimiento does not exist or is not a DISPENSACION_HS_CONTROL entry', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento/, () => [[]]]
+    ]);
+
+    await expect(anularEntregaHS(999, 9, 3)).rejects.toThrow(/no encontrada/);
   });
 });

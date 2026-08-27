@@ -99,12 +99,147 @@ export async function getHistorialEntregas(idFormulacionHs) {
       ORDER BY m.fecha_hora DESC`,
     idsControl
   );
+  if (!movimientos.length) return [];
 
-  return movimientos.map(m => ({
-    ...m,
-    nombre_medicamento: nombrePorControl[m.referencia_id] ?? null,
-    id_med_formulacion_hs: idMedFormPorControl[m.referencia_id] ?? null
-  }));
+  // Una entrega anulada (ver anularEntregaHS) deja de contar como real: se
+  // excluye del histórico para que la cantidad vuelva a verse como pendiente.
+  const idsMovimientos = movimientos.map(m => m.id_movimiento);
+  const placeholdersMov = idsMovimientos.map(() => '?').join(',');
+  const anulaciones = await query(
+    `SELECT referencia_id FROM movimientos_inventario
+      WHERE referencia_tipo = 'ANULACION_DISPENSACION_HS' AND referencia_id IN (${placeholdersMov})`,
+    idsMovimientos
+  );
+  const anuladosSet = new Set(anulaciones.map(a => Number(a.referencia_id)));
+
+  return movimientos
+    .filter(m => !anuladosSet.has(Number(m.id_movimiento)))
+    .map(m => ({
+      ...m,
+      nombre_medicamento: nombrePorControl[m.referencia_id] ?? null,
+      id_med_formulacion_hs: idMedFormPorControl[m.referencia_id] ?? null
+    }));
+}
+
+// Anula una entrega puntual del histórico (un movimiento_inventario de tipo
+// DISPENSACION_HS_CONTROL): repone el inventario que había salido, revierte
+// el renglón de controlados_libro si aplica, resta lo anulado del acumulado
+// cacheado en dispensacion_hs_control (vuelve a quedar pendiente) y deja
+// trazabilidad de qué usuario lo hizo. El movimiento original NUNCA se borra
+// ni se modifica (el ledger es append-only) — se inserta un movimiento de
+// reversión que referencia al original.
+export async function anularEntregaHS(idMovimiento, userId, idSede = null) {
+  return withTransaction(async (connection) => {
+    const [movRows] = await connection.execute(
+      `SELECT * FROM movimientos_inventario WHERE id_movimiento = ? AND referencia_tipo = 'DISPENSACION_HS_CONTROL' FOR UPDATE`,
+      [idMovimiento]
+    );
+    const movimiento = movRows[0];
+    if (!movimiento) {
+      throw new HttpError(404, 'Entrega no encontrada');
+    }
+
+    const [yaAnuladoRows] = await connection.execute(
+      `SELECT id_movimiento FROM movimientos_inventario
+        WHERE referencia_tipo = 'ANULACION_DISPENSACION_HS' AND referencia_id = ?`,
+      [idMovimiento]
+    );
+    if (yaAnuladoRows.length) {
+      throw new HttpError(400, 'Esta entrega ya fue anulada.');
+    }
+
+    const idControl = movimiento.referencia_id;
+    const [controlRows] = await connection.execute(
+      `SELECT id, cantidad_formulada, cantidad_dispensada FROM dispensacion_hs_control WHERE id = ? FOR UPDATE`,
+      [idControl]
+    );
+    const control = controlRows[0];
+    if (!control) {
+      throw new HttpError(404, 'Registro de control no encontrado');
+    }
+
+    const [existRows] = await connection.execute(
+      `SELECT id_existencia, cantidad_disponible FROM existencias WHERE id_lote = ? AND id_ubicacion = ? FOR UPDATE`,
+      [movimiento.id_lote, movimiento.id_ubicacion_origen]
+    );
+    const existencia = existRows[0];
+    if (!existencia) {
+      throw new HttpError(404, 'No se encontró la existencia original para reponer el inventario.');
+    }
+
+    const saldoAnterior = Number(existencia.cantidad_disponible);
+    const saldoNuevo = saldoAnterior + Number(movimiento.cantidad);
+
+    await connection.execute(
+      `UPDATE existencias SET cantidad_disponible = ? WHERE id_existencia = ?`,
+      [saldoNuevo, existencia.id_existencia]
+    );
+
+    await connection.execute(
+      `INSERT INTO movimientos_inventario (
+         tipo, id_producto, id_lote, id_almacen_destino, id_ubicacion_destino,
+         cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, id_usuario
+       ) VALUES ('devolucion_venta', ?, ?, ?, ?, ?, ?, ?, 'ANULACION_DISPENSACION_HS', ?, ?)`,
+      [
+        movimiento.id_producto, movimiento.id_lote,
+        movimiento.id_almacen_origen, movimiento.id_ubicacion_origen,
+        movimiento.cantidad, movimiento.costo_unitario,
+        'Anulación de entrega de dispensación HS', idMovimiento, userId ?? null
+      ]
+    );
+
+    const [prodRows] = await connection.execute(
+      `SELECT es_controlado FROM productos WHERE id_producto = ?`,
+      [movimiento.id_producto]
+    );
+    if (prodRows[0]?.es_controlado) {
+      await connection.execute(
+        `INSERT INTO controlados_libro (
+           tipo_movimiento, id_producto, id_lote, cantidad, saldo_anterior, saldo_nuevo,
+           referencia_tipo, referencia_id, usuario_responsable, observaciones
+         ) VALUES ('entrada', ?, ?, ?, ?, ?, 'ANULACION_DISPENSACION_HS', ?, ?, ?)`,
+        [
+          movimiento.id_producto, movimiento.id_lote, movimiento.cantidad,
+          saldoAnterior, saldoNuevo, idMovimiento, userId ?? null,
+          'Reingreso por anulación de entrega'
+        ]
+      );
+    }
+
+    const nuevoTotal = Math.max(0, Number(control.cantidad_dispensada) - Number(movimiento.cantidad));
+    let nuevoEstado = 'parcial';
+    if (nuevoTotal === 0) nuevoEstado = 'pendiente';
+    else if (nuevoTotal >= Number(control.cantidad_formulada)) nuevoEstado = 'dispensado';
+
+    await connection.execute(
+      `UPDATE dispensacion_hs_control SET cantidad_dispensada = ?, estado = ? WHERE id = ?`,
+      [nuevoTotal, nuevoEstado, idControl]
+    );
+
+    await recordProcessTrace(connection, {
+      proceso: 'DISPENSACION',
+      subproceso: 'ANULAR_ENTREGA_HS',
+      id_sede: idSede,
+      id_usuario: userId ?? null,
+      referencia_tipo: 'DISPENSACION_HS_CONTROL',
+      referencia_id: idControl,
+      descripcion: `Anulación de entrega de ${movimiento.cantidad} unidad(es) (movimiento #${idMovimiento}) — la cantidad vuelve a quedar pendiente`,
+      payload_json: {
+        id_movimiento_anulado: idMovimiento,
+        id_lote: movimiento.id_lote,
+        cantidad_repuesta: Number(movimiento.cantidad),
+        cantidad_dispensada_antes: Number(control.cantidad_dispensada),
+        cantidad_dispensada_despues: nuevoTotal
+      }
+    });
+
+    return {
+      id_movimiento: idMovimiento,
+      cantidad_repuesta: Number(movimiento.cantidad),
+      cantidad_dispensada: nuevoTotal,
+      estado: nuevoEstado
+    };
+  });
 }
 
 export async function dispensarMedicamento(payload, userId, idSede = null) {

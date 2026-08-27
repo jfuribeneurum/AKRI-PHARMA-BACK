@@ -7,7 +7,8 @@ import {
   listDispensacionesHS,
   dispensarMedicamento,
   cancelarDispensacion,
-  getHistorialEntregas
+  getHistorialEntregas,
+  anularEntregaHS
 } from '../services/dispensacion-hs.service.js';
 
 export const dispensacionHsRouter = Router();
@@ -67,5 +68,14 @@ dispensacionHsRouter.post('/', validate(dispensarSchema), asyncHandler(async (re
 dispensacionHsRouter.delete('/:id', asyncHandler(async (req, res) => {
   const userId = req.user?.sub ?? null;
   const result = await cancelarDispensacion(Number(req.params.id), userId);
+  res.json({ success: true, data: result });
+}));
+
+// POST /dispensacion-hs/movimiento/:id/anular — anular una entrega puntual
+// del histórico: repone el inventario descontado y la cantidad vuelve a
+// quedar pendiente por entregar, dejando trazabilidad del usuario que anuló.
+dispensacionHsRouter.post('/movimiento/:id/anular', asyncHandler(async (req, res) => {
+  const userId = req.user?.sub ?? null;
+  const result = await anularEntregaHS(Number(req.params.id), userId, req.user?.id_sede ?? null);
   res.json({ success: true, data: result });
 }));
