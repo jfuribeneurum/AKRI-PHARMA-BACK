@@ -22,7 +22,7 @@ vi.mock('../traceability.service.js', () => ({
 const { query, withTransaction } = await import('../../config/db.js');
 const { getFormulacionHSById } = await import('../formulacion-hs.service.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
-const { dispensarMedicamento, getControlStatusBatch, getHistorialEntregas, anularEntregaHS } = await import('../dispensacion-hs.service.js');
+const { dispensarMedicamento, getControlStatusBatch, getHistorialEntregas, anularEntregaHS, cancelarDispensacion } = await import('../dispensacion-hs.service.js');
 
 function mockFormulacion() {
   return {
@@ -446,5 +446,41 @@ describe('dispensacion-hs.service anularEntregaHS', () => {
     ]);
 
     await expect(anularEntregaHS(999, 9, 3)).rejects.toThrow(/no encontrada/);
+  });
+});
+
+// cancelarDispensacion cambiaba el estado a 'cancelado' pero nunca dejaba
+// trazabilidad — a diferencia de dispensarMedicamento y anularEntregaHS en
+// este mismo archivo, que sí la registran.
+describe('dispensacion-hs.service cancelarDispensacion', () => {
+  beforeEach(() => {
+    query.mockReset();
+    recordProcessTrace.mockReset();
+  });
+
+  it('cancels the record and leaves an audit trace with the requesting user and sede', async () => {
+    query
+      .mockResolvedValueOnce([{ id: 55, nombre_medicamento: 'Acetaminofén' }])
+      .mockResolvedValueOnce([{ affectedRows: 1 }]);
+
+    const result = await cancelarDispensacion(55, 9, 3);
+
+    expect(result).toEqual({ id: 55, estado: 'cancelado' });
+    const updateCall = query.mock.calls.find(([sql]) => /UPDATE dispensacion_hs_control SET estado = 'cancelado'/.test(sql));
+    expect(updateCall[1]).toEqual([9, 55]);
+
+    expect(recordProcessTrace).toHaveBeenCalledTimes(1);
+    const [connectionArg, entry] = recordProcessTrace.mock.calls[0];
+    expect(connectionArg).toBeNull();
+    expect(entry).toMatchObject({
+      proceso: 'DISPENSACION', subproceso: 'CANCELAR_DISPENSACION_HS',
+      id_sede: 3, id_usuario: 9, referencia_tipo: 'DISPENSACION_HS_CONTROL', referencia_id: 55
+    });
+  });
+
+  it('rejects when the record does not exist', async () => {
+    query.mockResolvedValueOnce([]);
+    await expect(cancelarDispensacion(999, 9, 3)).rejects.toThrow(/no encontrado/);
+    expect(recordProcessTrace).not.toHaveBeenCalled();
   });
 });

@@ -163,10 +163,13 @@ export async function createPurchaseOrder(payload, user) {
 export async function getPurchaseOrder(idOc) {
   const rows = await query(
     `SELECT oc.*, COALESCE(p.razon_social, p.nombre) AS proveedor_nombre,
-            s.nombre AS sede_nombre, s.ciudad AS sede_ciudad, s.direccion AS sede_direccion
+            s.nombre AS sede_nombre, s.ciudad AS sede_ciudad, s.direccion AS sede_direccion, s.telefono AS sede_telefono,
+            uc.nombre_completo AS creado_por_nombre, ua.nombre_completo AS aprobado_por_nombre
        FROM ordenes_compra oc
        INNER JOIN proveedores p ON p.id_proveedor = oc.id_proveedor
        LEFT JOIN sedes s ON s.id_sede = oc.id_sede
+       LEFT JOIN usuarios uc ON uc.id_usuario = oc.creado_por
+       LEFT JOIN usuarios ua ON ua.id_usuario = oc.aprobado_por
       WHERE oc.id_oc = ?`,
     [idOc]
   );
@@ -239,7 +242,7 @@ export async function updatePurchaseOrder(idOc, payload, user) {
 }
 
 export async function approvePurchaseOrder(idOc, user) {
-  await assertCentralPurchasing(user);
+  const site = await assertCentralPurchasing(user);
   const rows = await query(
     `SELECT id_oc, numero_oc, estado FROM ordenes_compra WHERE id_oc = ?`, [idOc]
   );
@@ -248,12 +251,24 @@ export async function approvePurchaseOrder(idOc, user) {
   if (!['borrador', 'enviada', 'editada'].includes(oc.estado)) {
     throw new HttpError(400, `No se puede aprobar una orden en estado "${oc.estado}"`);
   }
-  await query(`UPDATE ordenes_compra SET estado = 'aprobada' WHERE id_oc = ?`, [idOc]);
+  // aprobado_por/fecha_aprobacion existían en la tabla pero nunca se
+  // llenaban — sin esto, el documento de la orden nunca puede mostrar quién
+  // la aprobó.
+  await query(
+    `UPDATE ordenes_compra SET estado = 'aprobada', aprobado_por = ?, fecha_aprobacion = NOW() WHERE id_oc = ?`,
+    [user?.sub ?? null, idOc]
+  );
+  await recordProcessTrace(null, {
+    proceso: 'COMPRAS', subproceso: 'ORDEN_COMPRA_APROBACION',
+    id_sede: site.id_sede, id_usuario: user?.sub ?? null, perfil_nombre: user?.role ?? null,
+    referencia_tipo: 'ORDEN_COMPRA', referencia_id: idOc,
+    descripcion: `OC ${oc.numero_oc} aprobada`
+  });
   return { id_oc: idOc, numero_oc: oc.numero_oc, estado: 'aprobada' };
 }
 
 export async function cancelPurchaseOrder(idOc, user) {
-  await assertCentralPurchasing(user);
+  const site = await assertCentralPurchasing(user);
   const rows = await query(
     `SELECT id_oc, numero_oc, estado FROM ordenes_compra WHERE id_oc = ?`, [idOc]
   );
@@ -263,6 +278,12 @@ export async function cancelPurchaseOrder(idOc, user) {
     throw new HttpError(400, `No se puede cancelar una orden en estado "${oc.estado}"`);
   }
   await query(`UPDATE ordenes_compra SET estado = 'cancelada' WHERE id_oc = ?`, [idOc]);
+  await recordProcessTrace(null, {
+    proceso: 'COMPRAS', subproceso: 'ORDEN_COMPRA_CANCELACION',
+    id_sede: site.id_sede, id_usuario: user?.sub ?? null, perfil_nombre: user?.role ?? null,
+    referencia_tipo: 'ORDEN_COMPRA', referencia_id: idOc,
+    descripcion: `OC ${oc.numero_oc} cancelada`
+  });
   return { id_oc: idOc, numero_oc: oc.numero_oc, estado: 'cancelada' };
 }
 

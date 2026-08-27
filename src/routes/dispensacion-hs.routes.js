@@ -67,7 +67,7 @@ dispensacionHsRouter.post('/', validate(dispensarSchema), asyncHandler(async (re
 // DELETE /dispensacion-hs/:id — cancelar
 dispensacionHsRouter.delete('/:id', asyncHandler(async (req, res) => {
   const userId = req.user?.sub ?? null;
-  const result = await cancelarDispensacion(Number(req.params.id), userId);
+  const result = await cancelarDispensacion(Number(req.params.id), userId, req.user?.id_sede ?? null);
   res.json({ success: true, data: result });
 }));
 

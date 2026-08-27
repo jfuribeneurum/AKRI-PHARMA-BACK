@@ -472,13 +472,24 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
   });
 }
 
-export async function cancelarDispensacion(id, userId) {
-  const [row] = await query(`SELECT id FROM dispensacion_hs_control WHERE id = ?`, [id]);
+export async function cancelarDispensacion(id, userId, idSede = null) {
+  const [row] = await query(`SELECT id, nombre_medicamento FROM dispensacion_hs_control WHERE id = ?`, [id]);
   if (!row) throw new HttpError(404, 'Registro no encontrado');
 
   await query(
     `UPDATE dispensacion_hs_control SET estado = 'cancelado', id_usuario = ? WHERE id = ?`,
     [userId ?? null, id]
   );
+
+  await recordProcessTrace(null, {
+    proceso: 'DISPENSACION',
+    subproceso: 'CANCELAR_DISPENSACION_HS',
+    id_sede: idSede,
+    id_usuario: userId ?? null,
+    referencia_tipo: 'DISPENSACION_HS_CONTROL',
+    referencia_id: id,
+    descripcion: `Dispensación cancelada: ${row.nombre_medicamento ?? ''}`.trim()
+  });
+
   return { id, estado: 'cancelado' };
 }

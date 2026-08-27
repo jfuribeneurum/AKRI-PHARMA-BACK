@@ -4,6 +4,7 @@ import { validate } from '../middleware/validate.js';
 import { authRequired } from '../middleware/auth.js';
 import { z } from 'zod';
 import { pool } from '../config/db.js';
+import { recordProcessTrace } from '../services/traceability.service.js';
 
 const router = Router();
 router.use(authRequired);
@@ -440,6 +441,16 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
       }
     }
 
+    await recordProcessTrace(connection, {
+      proceso: 'COMPRAS',
+      subproceso: esDevolucion ? 'INGRESO_DEVOLUCION' : 'INGRESO_RECEPCION',
+      id_usuario: req.user?.sub ?? null,
+      referencia_tipo: 'INGRESO',
+      referencia_id: ingresoId,
+      descripcion: `Ingreso ${referencia} registrado (${items.length} ítem${items.length === 1 ? '' : 's'})`,
+      payload_json: { numero_orden_compra: numero_orden_compra ?? null, estado, cantidad, total_ingreso: total_ingreso ?? null }
+    });
+
     res.status(201).json({ success: true, message: 'Ingreso creado exitosamente' });
   } finally {
     connection.release();
@@ -453,7 +464,10 @@ router.get('/:id', asyncHandler(async (req, res) => {
   const connection = await pool.getConnection();
   try {
     const [[ingreso]] = await connection.query(`
-      SELECT * FROM ingresos WHERE id_ingreso = ?
+      SELECT i.*, u.nombre_completo AS creado_por_nombre
+        FROM ingresos i
+        LEFT JOIN usuarios u ON u.id_usuario = i.creado_por
+       WHERE i.id_ingreso = ?
     `, [req.params.id]);
 
     if (!ingreso) {
@@ -485,6 +499,15 @@ router.put('/:id', asyncHandler(async (req, res) => {
       WHERE id_ingreso = ?
     `, [referencia, producto, cantidad, lote, fecha_vencimiento, estado, req.params.id]);
 
+    await recordProcessTrace(connection, {
+      proceso: 'COMPRAS',
+      subproceso: 'INGRESO_EDICION',
+      id_usuario: req.user?.sub ?? null,
+      referencia_tipo: 'INGRESO',
+      referencia_id: Number(req.params.id),
+      descripcion: `Ingreso ${referencia} editado`
+    });
+
     res.json({ success: true, message: 'Ingreso actualizado exitosamente' });
   } finally {
     connection.release();
@@ -497,7 +520,22 @@ router.put('/:id', asyncHandler(async (req, res) => {
 router.delete('/:id', asyncHandler(async (req, res) => {
   const connection = await pool.getConnection();
   try {
+    const [[ingreso]] = await connection.query(`SELECT referencia FROM ingresos WHERE id_ingreso = ?`, [req.params.id]);
+
     await connection.query(`DELETE FROM ingresos WHERE id_ingreso = ?`, [req.params.id]);
+
+    // Nota: esto elimina el encabezado del ingreso pero NO revierte el
+    // inventario que ya se sumó a existencias/movimientos_inventario al
+    // crearlo — queda fuera del alcance de este cambio (solo trazabilidad).
+    await recordProcessTrace(connection, {
+      proceso: 'COMPRAS',
+      subproceso: 'INGRESO_ELIMINACION',
+      id_usuario: req.user?.sub ?? null,
+      referencia_tipo: 'INGRESO',
+      referencia_id: Number(req.params.id),
+      descripcion: `Ingreso ${ingreso?.referencia ?? req.params.id} eliminado`
+    });
+
     res.json({ success: true, message: 'Ingreso eliminado exitosamente' });
   } finally {
     connection.release();

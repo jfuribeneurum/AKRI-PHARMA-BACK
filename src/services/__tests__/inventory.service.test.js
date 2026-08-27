@@ -3,12 +3,34 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // listStock/getInventoryLookups used to return every warehouse's stock
 // unscoped, regardless of who was asking — the active-almacén selector
 // feature depends on these actually filtering by the caller's session.
+const { mockConnection } = vi.hoisted(() => ({ mockConnection: { execute: vi.fn() } }));
+
 vi.mock('../../config/db.js', () => ({
-  query: vi.fn()
+  query: vi.fn(),
+  withTransaction: vi.fn(async (work) => work(mockConnection))
+}));
+vi.mock('../../config/env.js', () => ({ env: { PUBLIC_UPLOAD_BASE_URL: 'https://cdn.test', ALLOW_STOCK_NEGATIVE: false } }));
+vi.mock('../traceability.service.js', () => ({
+  recordProcessTrace: vi.fn()
 }));
 
-const { query } = await import('../../config/db.js');
-const { listStock, getInventoryLookups } = await import('../inventory.service.js');
+const { query, withTransaction } = await import('../../config/db.js');
+const { recordProcessTrace } = await import('../traceability.service.js');
+const { listStock, getInventoryLookups, registerBarcodeIngress, registerBarcodeEgress } = await import('../inventory.service.js');
+
+// Router genérico para connection.execute, mismo patrón que dispensacion-hs
+// y sale.service.test.js: {patrón: () => filas}, el resto de INSERT/UPDATE
+// que no importan al test devuelven [] / {insertId}.
+function routeExecute(overrides) {
+  mockConnection.execute.mockImplementation(async (sql) => {
+    for (const [pattern, handler] of overrides) {
+      if (pattern.test(sql)) return handler(sql);
+    }
+    if (/^INSERT/.test(sql)) return [{ insertId: 1 }];
+    if (/^UPDATE/.test(sql)) return [{ affectedRows: 1 }];
+    return [[]];
+  });
+}
 
 describe('inventory.service warehouse scoping', () => {
   beforeEach(() => {
@@ -47,5 +69,65 @@ describe('inventory.service warehouse scoping', () => {
     await getInventoryLookups();
     const [, almacenesParams] = query.mock.calls[0];
     expect(almacenesParams).toEqual([null, null]);
+  });
+});
+
+// registerBarcodeIngress/Egress movían inventario real (existencias +
+// movimientos_inventario) por escaneo pero nunca dejaban trazabilidad en
+// procesos_terminados_trazabilidad, a diferencia de createMovement (el
+// registro manual) en este mismo archivo.
+describe('inventory.service barcode scan traceability', () => {
+  beforeEach(() => {
+    withTransaction.mockClear();
+    mockConnection.execute.mockReset();
+    recordProcessTrace.mockReset();
+  });
+
+  it('registerBarcodeIngress records an audit trace of the scanned entrada', async () => {
+    routeExecute([
+      [/FROM productos p/, () => [[{ id_producto: 7, nombre_comercial: 'Acetaminofén', costo_referencia: 100, precio_venta: 200 }]]],
+      [/FROM ubicaciones_almacen u/, () => [[{ id_ubicacion: 1, id_almacen: 1, ubicacion: 'Estante A', almacen: 'Principal' }]]],
+      [/SELECT id_lote, numero_lote/, () => [[]]],
+      [/INSERT INTO lotes/, () => [{ insertId: 3 }]],
+      [/FROM existencias WHERE id_lote = \? AND id_ubicacion = \?/, () => [[]]],
+      [/INSERT INTO movimientos_inventario/, () => [{ insertId: 55 }]],
+      [/INSERT INTO escaneos_codigo_barras/, () => [{ insertId: 90 }]]
+    ]);
+
+    await registerBarcodeIngress(
+      { barcode: '7501234567890', numero_lote: 'L-1', fecha_vencimiento: '2027-01-01', id_ubicacion_destino: 1, quantity: 10 },
+      9
+    );
+
+    expect(recordProcessTrace).toHaveBeenCalledTimes(1);
+    const [connectionArg, entry] = recordProcessTrace.mock.calls[0];
+    expect(connectionArg).toBe(mockConnection);
+    expect(entry).toMatchObject({
+      proceso: 'INVENTARIO', subproceso: 'INGRESO_ESCANEO',
+      id_usuario: 9, referencia_tipo: 'MOVIMIENTO_INVENTARIO', referencia_id: 55
+    });
+  });
+
+  it('registerBarcodeEgress records an audit trace of the scanned salida', async () => {
+    routeExecute([
+      [/FROM productos p/, () => [[{ id_producto: 7, nombre_comercial: 'Acetaminofén', costo_referencia: 100 }]]],
+      [/FROM existencias e/, () => [[{
+        id_existencia: 500, id_almacen: 1, id_ubicacion: 1, cantidad_disponible: 10,
+        id_lote: 3, numero_lote: 'L-1', fecha_vencimiento: '2027-01-01', costo_unitario: 100,
+        almacen: 'Principal', ubicacion: 'Estante A'
+      }]]],
+      [/INSERT INTO movimientos_inventario/, () => [{ insertId: 66 }]],
+      [/INSERT INTO escaneos_codigo_barras/, () => [{ insertId: 91 }]]
+    ]);
+
+    await registerBarcodeEgress({ barcode: '7501234567890', quantity: 2 }, 9);
+
+    expect(recordProcessTrace).toHaveBeenCalledTimes(1);
+    const [connectionArg, entry] = recordProcessTrace.mock.calls[0];
+    expect(connectionArg).toBe(mockConnection);
+    expect(entry).toMatchObject({
+      proceso: 'INVENTARIO', subproceso: 'EGRESO_ESCANEO',
+      id_usuario: 9, referencia_tipo: 'MOVIMIENTO_INVENTARIO', referencia_id: 66
+    });
   });
 });

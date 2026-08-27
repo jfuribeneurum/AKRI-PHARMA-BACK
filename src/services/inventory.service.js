@@ -358,6 +358,16 @@ export async function registerBarcodeIngress(payload, userId) {
       id_usuario: userId ?? null
     });
 
+    await recordProcessTrace(connection, {
+      proceso: 'INVENTARIO',
+      subproceso: 'INGRESO_ESCANEO',
+      id_usuario: userId ?? null,
+      referencia_tipo: 'MOVIMIENTO_INVENTARIO',
+      referencia_id: movementInsert.insertId,
+      descripcion: `Ingreso por escaneo: ${product.nombre_comercial ?? ''} (${payload.quantity})`,
+      payload_json: { barcode: payload.barcode, id_lote: loteId, cantidad: payload.quantity, id_ubicacion_destino: location.id_ubicacion }
+    });
+
     return {
       id_movimiento: movementInsert.insertId,
       id_escaneo: scanId,
@@ -468,6 +478,16 @@ export async function registerBarcodeEgress(payload, userId) {
         saldo_resultante: Number(availability.cantidad_disponible) - Number(payload.quantity)
       },
       id_usuario: userId ?? null
+    });
+
+    await recordProcessTrace(connection, {
+      proceso: 'INVENTARIO',
+      subproceso: 'EGRESO_ESCANEO',
+      id_usuario: userId ?? null,
+      referencia_tipo: 'MOVIMIENTO_INVENTARIO',
+      referencia_id: movementInsert.insertId,
+      descripcion: `Egreso por escaneo: ${product.nombre_comercial ?? ''} (${payload.quantity})`,
+      payload_json: { barcode: payload.barcode, id_lote: availability.id_lote, cantidad: payload.quantity, id_ubicacion_origen: availability.id_ubicacion }
     });
 
     return {

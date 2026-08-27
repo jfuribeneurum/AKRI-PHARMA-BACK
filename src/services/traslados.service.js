@@ -41,6 +41,16 @@ export async function createTraslado(payload, userId) {
     ]
   );
 
+  await recordProcessTrace(null, {
+    proceso: 'TRASLADOS',
+    subproceso: 'CREACION',
+    id_usuario: userId,
+    referencia_tipo: 'TRASLADO',
+    referencia_id: result.insertId,
+    descripcion: `Traslado #${result.insertId} creado (${rows[0].nombre_comercial ?? ''})`,
+    payload_json: { id_lote: payload.id_lote, cantidad: payload.cantidad, id_almacen_destino: payload.id_almacen_destino }
+  });
+
   return {
     id_traslado: result.insertId,
     message: 'Traslado registrado y pendiente de recepción'
