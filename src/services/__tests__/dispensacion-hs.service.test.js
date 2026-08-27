@@ -323,7 +323,8 @@ describe('dispensacion-hs.service getHistorialEntregas', () => {
     expect(result).toEqual([{
       id_movimiento: 324, referencia_id: 15, fecha_hora: '2026-08-26T21:31:19.000Z', cantidad: 2,
       numero_lote: 'LOTE-TEST-ABC-01', almacen: 'Almacén Principal', usuario: 'Akri Admin Sistema',
-      nombre_medicamento: 'ABACAVIR 300 MG TABLETA RECUBIERTA'
+      nombre_medicamento: 'ABACAVIR 300 MG TABLETA RECUBIERTA',
+      id_med_formulacion_hs: 548
     }]);
     const [movimientosSql, movimientosParams] = query.mock.calls[1];
     expect(movimientosSql).toMatch(/referencia_tipo = 'DISPENSACION_HS_CONTROL'/);

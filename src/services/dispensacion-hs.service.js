@@ -83,6 +83,7 @@ export async function getHistorialEntregas(idFormulacionHs) {
   if (!controles.length) return [];
 
   const nombrePorControl = Object.fromEntries(controles.map(c => [c.id, c.nombre_medicamento]));
+  const idMedFormPorControl = Object.fromEntries(controles.map(c => [c.id, c.id_med_formulacion_hs]));
   const idsControl = controles.map(c => c.id);
   const placeholders = idsControl.map(() => '?').join(',');
 
@@ -101,7 +102,8 @@ export async function getHistorialEntregas(idFormulacionHs) {
 
   return movimientos.map(m => ({
     ...m,
-    nombre_medicamento: nombrePorControl[m.referencia_id] ?? null
+    nombre_medicamento: nombrePorControl[m.referencia_id] ?? null,
+    id_med_formulacion_hs: idMedFormPorControl[m.referencia_id] ?? null
   }));
 }
 
