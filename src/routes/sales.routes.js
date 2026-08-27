@@ -15,6 +15,7 @@ const saleItemSchema = z.object({
 });
 
 const saleSchema = z.object({
+  id_sede: z.number().int().positive(),
   folio_venta: z.string().min(2),
   tipo: z.enum(['mostrador', 'credito', 'institucional']).optional(),
   id_cliente: z.number().int().optional().nullable(),

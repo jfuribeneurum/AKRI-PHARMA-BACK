@@ -1,6 +1,7 @@
 import { query, withTransaction } from '../config/db.js';
 import { env } from '../config/env.js';
 import { HttpError } from '../utils/http-error.js';
+import { recordProcessTrace } from './traceability.service.js';
 
 function calculateSaleTotals(items) {
   return items.reduce((acc, item) => {
@@ -30,10 +31,11 @@ export async function createSale(payload, userId) {
 
     const [headerResult] = await connection.execute(
       `INSERT INTO ventas (
-        folio_venta, tipo, id_cliente, id_paciente, id_medico, id_receta,
+        id_sede, folio_venta, tipo, id_cliente, id_paciente, id_medico, id_receta,
         estado, subtotal, impuestos, total, metodo_pago, requiere_factura, creado_por
-      ) VALUES (?, ?, ?, ?, ?, ?, 'confirmada', ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmada', ?, ?, ?, ?, ?, ?)`,
       [
+        payload.id_sede,
         payload.folio_venta,
         payload.tipo ?? 'mostrador',
         payload.id_cliente ?? null,
@@ -156,6 +158,23 @@ export async function createSale(payload, userId) {
         );
       }
     }
+
+    await recordProcessTrace(connection, {
+      proceso: 'VENTA',
+      subproceso: 'CREAR_VENTA',
+      id_sede: payload.id_sede,
+      id_usuario: userId ?? null,
+      referencia_tipo: 'VENTA',
+      referencia_id: headerResult.insertId,
+      descripcion: `Venta ${payload.folio_venta} registrada (${payload.items.length} ítem${payload.items.length > 1 ? 's' : ''})`,
+      payload_json: {
+        folio_venta: payload.folio_venta,
+        tipo: payload.tipo ?? 'mostrador',
+        items: payload.items.length,
+        total: totals.total,
+        requiere_factura: payload.requiere_factura ?? false
+      }
+    });
 
     return {
       id_venta: headerResult.insertId,
