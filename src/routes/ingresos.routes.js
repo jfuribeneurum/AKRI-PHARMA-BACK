@@ -37,6 +37,7 @@ const ingresoSchema = z.object({
   // Factura
   prefijo_factura:      z.string().optional().nullable(),
   numero_factura:       z.string().optional().nullable(),
+  fecha_factura:        z.string().optional().nullable(),
   cufe:                 z.string().optional().nullable(),
   fecha_recepcion:      z.string().optional().nullable(),
   observaciones:        z.string().optional().nullable(),
@@ -274,7 +275,7 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
         `INSERT INTO movimientos_inventario
            (tipo, id_producto, id_lote, id_almacen_origen, id_ubicacion_origen,
             cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, id_usuario)
-         VALUES ('devolucion_compra', ?, ?, ?, ?, ?, ?, ?, 'ingreso_sebas', ?, ?)`,
+         VALUES ('devolucion_compra', ?, ?, ?, ?, ?, ?, ?, 'ingreso_pharma', ?, ?)`,
         [producto.id_producto, lote.id_lote,
          almacen.id_almacen, ubicacion.id_ubicacion,
          cantidad, costoUnitario,
@@ -299,11 +300,11 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
         `INSERT INTO movimientos_inventario
            (tipo, id_producto, id_lote, id_almacen_destino, id_ubicacion_destino,
             cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, id_usuario)
-         VALUES ('entrada_compra', ?, ?, ?, ?, ?, ?, ?, 'ingreso_sebas', ?, ?)`,
+         VALUES ('entrada_compra', ?, ?, ?, ?, ?, ?, ?, 'ingreso_pharma', ?, ?)`,
         [producto.id_producto, lote.id_lote,
          almacen.id_almacen, ubicacion.id_ubicacion,
          cantidad, costoUnitario,
-         `Ingreso Sebas: ${referencia}`, ingresoId, userId]
+         `Ingreso Pharma: ${referencia}`, ingresoId, userId]
       );
     }
   }
@@ -330,6 +331,7 @@ router.get('/', asyncHandler(async (req, res) => {
         i.creado_por,
         i.prefijo_factura,
         i.numero_factura,
+        i.fecha_factura,
         i.cufe,
         i.fecha_recepcion,
         i.observaciones,
@@ -366,7 +368,7 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
   try {
     const {
       referencia, cantidad, lote, fecha_vencimiento, estado,
-      prefijo_factura, numero_factura, cufe, fecha_recepcion, observaciones,
+      prefijo_factura, numero_factura, fecha_factura, cufe, fecha_recepcion, observaciones,
       numero_orden_compra, sede, bodega, id_almacen,
       proveedor_nombre, proveedor_nit, proveedor_contacto, proveedor_telefono, proveedor_direccion,
       total_bruto, total_descuento, subtotal_neto, total_iva, total_ingreso,
@@ -381,14 +383,14 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
       INSERT INTO ingresos (
         referencia, producto, cantidad, lote, fecha_vencimiento, estado,
         fecha_ingreso, creado_por,
-        prefijo_factura, numero_factura, cufe, fecha_recepcion, observaciones,
+        prefijo_factura, numero_factura, fecha_factura, cufe, fecha_recepcion, observaciones,
         numero_orden_compra, sede, bodega, id_almacen,
         proveedor_nombre, proveedor_nit, proveedor_contacto, proveedor_telefono, proveedor_direccion,
         total_bruto, total_descuento, subtotal_neto, total_iva, total_ingreso
       ) VALUES (
         ?, ?, ?, ?, ?, ?,
         NOW(), ?,
-        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?
@@ -396,7 +398,7 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
     `, [
       referencia, productoTexto, cantidad, lote || null, fecha_vencimiento || null, estado,
       req.user?.sub ?? null,
-      prefijo_factura || null, numero_factura || null, cufe || null,
+      prefijo_factura || null, numero_factura || null, fecha_factura || null, cufe || null,
       fecha_recepcion || null, observaciones || null,
       numero_orden_compra || null, sede || null, bodega || null, idAlmacenActivo,
       proveedor_nombre || null, proveedor_nit || null,

@@ -787,7 +787,7 @@ async function ensureIngresosSchema() {
         INDEX idx_ingresos_fecha       (fecha_ingreso),
         INDEX idx_ingresos_creado_por  (creado_por)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        COMMENT='Ingresos Sebas: recepciones de mercancía y devoluciones'
+        COMMENT='Ingresos Pharma: recepciones de mercancía y devoluciones'
     `);
     console.log('[schema] Tabla ingresos creada en runtime');
   }
@@ -878,6 +878,13 @@ async function ensureIngresosSchema() {
     console.log('[schema] Columna id_almacen agregada a ingresos');
   }
 
+  // Fecha impresa en la factura del proveedor (trazabilidad) — distinta de
+  // fecha_recepcion, que es cuándo se recibió físicamente la mercancía.
+  if (!(await columnExists('ingresos', 'fecha_factura'))) {
+    await runStatement(`ALTER TABLE ingresos ADD COLUMN fecha_factura DATE NULL AFTER numero_factura`);
+    console.log('[schema] Columna fecha_factura agregada a ingresos');
+  }
+
   // ── Tabla ingresos_items ───────────────────────────────────────────────────
   if (!(await tableExists('ingresos_items'))) {
     await runStatement(`
@@ -906,7 +913,7 @@ async function ensureIngresosSchema() {
           ON DELETE CASCADE,
         INDEX idx_ingresos_items_ingreso (id_ingreso)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        COMMENT='Items detallados de cada ingreso Sebas'
+        COMMENT='Items detallados de cada ingreso Pharma'
     `);
     console.log('[schema] Tabla ingresos_items creada en runtime');
   }
@@ -1056,7 +1063,7 @@ async function runEnsureRuntimeSchema() {
   await tryStep('v19_role_usabilities', ensureV19RoleUsabilities);
   await tryStep('v20_role_usabilities', ensureV20RoleUsabilities);
   await tryStep('v19_purchase_requests', ensureV19PurchaseRequestSchema);
-  await tryStep('ingresos_sebas', ensureIngresosSchema);
+  await tryStep('ingresos_pharma', ensureIngresosSchema);
   await tryStep('dispensacion_hs_control', ensureDispensacionHsControlSchema);
   await tryStep('dispensacion_hs_extras', ensureDispensacionHsExtrasSchema);
   await tryStep('formas_farmaceuticas_hs_seed', ensureFormasFarmaceuticasHsSeed);
