@@ -1,5 +1,12 @@
 import { hsPool } from '../config/hs-db.js';
 import { query } from '../config/db.js';
+import { HttpError } from '../utils/http-error.js';
+
+// Los medicamentos agregados manualmente (no vienen de HealthSphere) se
+// exponen con un id_med_formulacion desplazado para que nunca choque con un
+// Id real de suhc_new_tbl_formulacion_medicamentos, y así puedan fluir por
+// el mismo flujo de dispensación (dispensacion_hs_control) que los de HS.
+const MEDICAMENTO_EXTRA_ID_OFFSET = 900000000;
 
 async function hsQuery(sql, params = []) {
   let connection;
@@ -151,8 +158,99 @@ export async function getFormulacionHSById(idFormulacion) {
   }
   const medicamentosEnriquecidos = medicamentos.map(m => ({
     ...m,
-    idProductoLocal: productoPorIdHs[m.idMedicamento] ?? null
+    idProductoLocal: productoPorIdHs[m.idMedicamento] ?? null,
+    esManual: false
   }));
 
-  return { ...formulacion, medicamentos: medicamentosEnriquecidos };
+  const [extras, exclusiones] = await Promise.all([
+    query(
+      `SELECT id, id_producto, nombre_medicamento, presentacion, via_administracion, cantidad, diagnostico, observaciones
+         FROM dispensacion_hs_medicamentos_extra
+        WHERE id_formulacion_hs = ? AND activo = 1
+        ORDER BY id ASC`,
+      [idFormulacion]
+    ),
+    query(
+      `SELECT id_med_formulacion_hs FROM dispensacion_hs_exclusiones WHERE id_formulacion_hs = ?`,
+      [idFormulacion]
+    )
+  ]);
+
+  const extrasComoMedicamento = extras.map(e => ({
+    id_med_formulacion: MEDICAMENTO_EXTRA_ID_OFFSET + Number(e.id),
+    idMedicamento: null,
+    nombre_medicamento: e.nombre_medicamento,
+    viaAdministracion: e.via_administracion,
+    unidadDosificacion: null,
+    posologia: null,
+    cantidad: e.cantidad,
+    presentacion: e.presentacion,
+    diagnostico: e.diagnostico,
+    observaciones: e.observaciones,
+    vigenciaInicio: null,
+    vigenciaFin: null,
+    pbs: 0,
+    idProductoLocal: e.id_producto,
+    esManual: true,
+    idMedicamentoExtra: e.id
+  }));
+
+  const idsExcluidos = new Set(exclusiones.map(e => Number(e.id_med_formulacion_hs)));
+  const medicamentosFinal = [...medicamentosEnriquecidos, ...extrasComoMedicamento]
+    .filter(m => !idsExcluidos.has(Number(m.id_med_formulacion)));
+
+  return { ...formulacion, medicamentos: medicamentosFinal };
+}
+
+// "Elimina" un medicamento formulado de la vista de dispensación. El origen
+// (HealthSphere) es de solo lectura y no se toca — se guarda localmente que
+// este medicamento queda excluido, con trazabilidad de quién y cuándo.
+export async function excluirMedicamentoFormulado(idFormulacionHs, idMedFormulacionHs, nombreMedicamento, userId, motivo = null) {
+  await query(
+    `INSERT IGNORE INTO dispensacion_hs_exclusiones
+       (id_formulacion_hs, id_med_formulacion_hs, nombre_medicamento, motivo, id_usuario)
+     VALUES (?, ?, ?, ?, ?)`,
+    [idFormulacionHs, idMedFormulacionHs, nombreMedicamento ?? null, motivo, userId ?? null]
+  );
+  return { id_formulacion_hs: idFormulacionHs, id_med_formulacion_hs: idMedFormulacionHs, excluido: true };
+}
+
+export async function restaurarMedicamentoExcluido(idFormulacionHs, idMedFormulacionHs) {
+  await query(
+    `DELETE FROM dispensacion_hs_exclusiones WHERE id_formulacion_hs = ? AND id_med_formulacion_hs = ?`,
+    [idFormulacionHs, idMedFormulacionHs]
+  );
+  return { id_formulacion_hs: idFormulacionHs, id_med_formulacion_hs: idMedFormulacionHs, excluido: false };
+}
+
+// Agrega un medicamento manual a una formulación (ej. algo que el médico no
+// alcanzó a formular en HealthSphere). Siempre debe corresponder a un
+// producto ya existente en el Maestro local (id_producto), nunca texto
+// libre — así queda disponible para dispensar (descuento de inventario por
+// lote) igual que el resto de medicamentos.
+export async function agregarMedicamentoExtra(idFormulacionHs, payload, userId) {
+  const { id_producto, presentacion = null, via_administracion = null, cantidad, diagnostico = null, observaciones = null } = payload;
+
+  const [producto] = await query(`SELECT nombre_comercial FROM productos WHERE id_producto = ? AND activo = TRUE`, [id_producto]);
+  if (!producto) {
+    throw new HttpError(404, 'El medicamento seleccionado no existe en el Maestro de productos.');
+  }
+
+  const result = await query(
+    `INSERT INTO dispensacion_hs_medicamentos_extra
+       (id_formulacion_hs, id_producto, nombre_medicamento, presentacion, via_administracion, cantidad, diagnostico, observaciones, id_usuario_creador)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [idFormulacionHs, id_producto, producto.nombre_comercial, presentacion, via_administracion, cantidad, diagnostico, observaciones, userId ?? null]
+  );
+
+  return { id_med_formulacion: MEDICAMENTO_EXTRA_ID_OFFSET + Number(result.insertId), esManual: true };
+}
+
+export async function eliminarMedicamentoExtra(idMedicamentoExtra, userId) {
+  const [row] = await query(`SELECT id FROM dispensacion_hs_medicamentos_extra WHERE id = ? AND activo = 1`, [idMedicamentoExtra]);
+  if (!row) {
+    throw new HttpError(404, 'Medicamento manual no encontrado');
+  }
+  await query(`UPDATE dispensacion_hs_medicamentos_extra SET activo = 0 WHERE id = ?`, [idMedicamentoExtra]);
+  return { id: idMedicamentoExtra, eliminado: true };
 }
