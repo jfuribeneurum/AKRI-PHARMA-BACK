@@ -787,7 +787,7 @@ async function ensureIngresosSchema() {
         INDEX idx_ingresos_fecha       (fecha_ingreso),
         INDEX idx_ingresos_creado_por  (creado_por)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        COMMENT='Ingresos Sebas: recepciones de mercancía y devoluciones'
+        COMMENT='Ingresos Pharma: recepciones de mercancía y devoluciones'
     `);
     console.log('[schema] Tabla ingresos creada en runtime');
   }
@@ -878,6 +878,13 @@ async function ensureIngresosSchema() {
     console.log('[schema] Columna id_almacen agregada a ingresos');
   }
 
+  // Fecha impresa en la factura del proveedor (trazabilidad) — distinta de
+  // fecha_recepcion, que es cuándo se recibió físicamente la mercancía.
+  if (!(await columnExists('ingresos', 'fecha_factura'))) {
+    await runStatement(`ALTER TABLE ingresos ADD COLUMN fecha_factura DATE NULL AFTER numero_factura`);
+    console.log('[schema] Columna fecha_factura agregada a ingresos');
+  }
+
   // ── Tabla ingresos_items ───────────────────────────────────────────────────
   if (!(await tableExists('ingresos_items'))) {
     await runStatement(`
@@ -906,7 +913,7 @@ async function ensureIngresosSchema() {
           ON DELETE CASCADE,
         INDEX idx_ingresos_items_ingreso (id_ingreso)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        COMMENT='Items detallados de cada ingreso Sebas'
+        COMMENT='Items detallados de cada ingreso Pharma'
     `);
     console.log('[schema] Tabla ingresos_items creada en runtime');
   }
@@ -923,6 +930,66 @@ async function ensureDispensacionHsControlSchema() {
   if (!(await columnExists('dispensacion_hs_control', 'regimen'))) {
     await runStatement(`ALTER TABLE dispensacion_hs_control ADD COLUMN regimen VARCHAR(100) NULL AFTER contrato`);
     console.log('[schema] Columna regimen agregada a dispensacion_hs_control');
+  }
+}
+
+// Los medicamentos formulados en HealthSphere son de solo lectura (BD externa),
+// así que "eliminar" uno de la vista de dispensación no puede borrar el
+// registro origen: se guarda localmente qué medicamentos quedaron excluidos
+// por formulación, y por separado los medicamentos agregados manualmente
+// (que no existen en HS) para poder dispensarlos igual que los demás.
+async function ensureDispensacionHsExtrasSchema() {
+  const prerequisites = (await Promise.all([
+    tableExists('usuarios'),
+    tableExists('productos')
+  ])).every(Boolean);
+
+  if (!prerequisites) {
+    return;
+  }
+
+  if (!(await tableExists('dispensacion_hs_exclusiones'))) {
+    await runStatement(`
+      CREATE TABLE IF NOT EXISTS dispensacion_hs_exclusiones (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          id_formulacion_hs INT NOT NULL,
+          id_med_formulacion_hs INT NOT NULL,
+          nombre_medicamento VARCHAR(255) DEFAULT NULL,
+          motivo VARCHAR(255) DEFAULT NULL,
+          id_usuario INT DEFAULT NULL,
+          fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uk_disp_hs_exclusion (id_formulacion_hs, id_med_formulacion_hs),
+          CONSTRAINT fk_disp_hs_exclusion_user FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario),
+          INDEX idx_disp_hs_exclusion_formulacion (id_formulacion_hs)
+      ) ENGINE=InnoDB COMMENT='Medicamentos formulados en HealthSphere excluidos localmente de la dispensación'
+    `);
+    console.log('[schema] Tabla dispensacion_hs_exclusiones creada en runtime');
+  }
+
+  if (!(await tableExists('dispensacion_hs_medicamentos_extra'))) {
+    await runStatement(`
+      CREATE TABLE IF NOT EXISTS dispensacion_hs_medicamentos_extra (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          id_formulacion_hs INT NOT NULL,
+          id_producto INT NOT NULL,
+          nombre_medicamento VARCHAR(255) NOT NULL,
+          presentacion VARCHAR(120) DEFAULT NULL,
+          via_administracion VARCHAR(120) DEFAULT NULL,
+          cantidad DECIMAL(14,3) NOT NULL,
+          diagnostico VARCHAR(255) DEFAULT NULL,
+          observaciones VARCHAR(255) DEFAULT NULL,
+          activo BOOLEAN NOT NULL DEFAULT TRUE,
+          id_usuario_creador INT DEFAULT NULL,
+          fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT fk_disp_hs_extra_user FOREIGN KEY (id_usuario_creador) REFERENCES usuarios(id_usuario),
+          CONSTRAINT fk_disp_hs_extra_producto FOREIGN KEY (id_producto) REFERENCES productos(id_producto),
+          INDEX idx_disp_hs_extra_formulacion (id_formulacion_hs, activo)
+      ) ENGINE=InnoDB COMMENT='Medicamentos agregados manualmente a una formulación de HealthSphere, siempre enlazados a un producto ya existente en el Maestro local'
+    `);
+    console.log('[schema] Tabla dispensacion_hs_medicamentos_extra creada en runtime');
+  } else if (!(await columnExists('dispensacion_hs_medicamentos_extra', 'id_producto'))) {
+    await runStatement(`ALTER TABLE dispensacion_hs_medicamentos_extra ADD COLUMN id_producto INT NOT NULL AFTER id_formulacion_hs`);
+    console.log('[schema] Columna id_producto agregada a dispensacion_hs_medicamentos_extra');
   }
 }
 
@@ -996,8 +1063,9 @@ async function runEnsureRuntimeSchema() {
   await tryStep('v19_role_usabilities', ensureV19RoleUsabilities);
   await tryStep('v20_role_usabilities', ensureV20RoleUsabilities);
   await tryStep('v19_purchase_requests', ensureV19PurchaseRequestSchema);
-  await tryStep('ingresos_sebas', ensureIngresosSchema);
+  await tryStep('ingresos_pharma', ensureIngresosSchema);
   await tryStep('dispensacion_hs_control', ensureDispensacionHsControlSchema);
+  await tryStep('dispensacion_hs_extras', ensureDispensacionHsExtrasSchema);
   await tryStep('formas_farmaceuticas_hs_seed', ensureFormasFarmaceuticasHsSeed);
 
   console.log('[schema] verificación de compatibilidad completada');
