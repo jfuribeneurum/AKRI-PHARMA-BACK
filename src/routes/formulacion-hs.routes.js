@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authRequired } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
-import { listFormulacionesHS, getFormulacionHSById } from '../services/formulacion-hs.service.js';
+import { listFormulacionesHS, getFormulacionHSById, getExclusionYExtraCounts } from '../services/formulacion-hs.service.js';
 import { getControlByFormulacion, getControlStatusBatch } from '../services/dispensacion-hs.service.js';
 
 export const formulacionHsRouter = Router();
@@ -40,12 +40,22 @@ formulacionHsRouter.get('/', asyncHandler(async (req, res) => {
   let enriched = result.data;
   if (enriched.length) {
     const ids = enriched.map(r => r.id_formulacion);
-    const statusRows = await getControlStatusBatch(ids);
+    const [statusRows, ajusteCounts] = await Promise.all([
+      getControlStatusBatch(ids),
+      getExclusionYExtraCounts(ids)
+    ]);
     const statusMap = Object.fromEntries(statusRows.map(s => [s.id_formulacion_hs, s]));
-    enriched = enriched.map(f => ({
-      ...f,
-      control: statusMap[f.id_formulacion] ?? null
-    }));
+    enriched = enriched.map(f => {
+      const ajuste = ajusteCounts[f.id_formulacion] ?? { excluidos: 0, extras: 0 };
+      return {
+        ...f,
+        // total_medicamentos crudo de HealthSphere no cuenta exclusiones ni
+        // medicamentos manuales — se corrige aquí para que el estado agregado
+        // (y su filtro) reflejen lo que el usuario realmente ve/dispensa.
+        total_medicamentos: Math.max(0, Number(f.total_medicamentos) - ajuste.excluidos + ajuste.extras),
+        control: statusMap[f.id_formulacion] ?? null
+      };
+    });
   }
 
   // Filtrar por estado y paginar en memoria

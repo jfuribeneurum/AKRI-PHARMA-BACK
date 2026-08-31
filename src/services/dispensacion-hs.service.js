@@ -287,8 +287,12 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
     : String(formulacion.fechaFormulacion ?? '').slice(0, 10);
 
   return withTransaction(async (connection) => {
+    // FOR UPDATE: dos guardados casi simultáneos del mismo medicamento (dos
+    // pestañas, o rondas seguidas antes de que refresque la anterior) no deben
+    // poder leer el mismo cantidad_dispensada y pisarse el uno al otro al
+    // escribir — el segundo debe esperar y partir del total ya actualizado.
     const [existingRows] = await connection.execute(
-      `SELECT id FROM dispensacion_hs_control WHERE id_formulacion_hs = ? AND id_med_formulacion_hs = ? LIMIT 1`,
+      `SELECT id FROM dispensacion_hs_control WHERE id_formulacion_hs = ? AND id_med_formulacion_hs = ? LIMIT 1 FOR UPDATE`,
       [id_formulacion_hs, id_med_formulacion_hs]
     );
     const esNuevo = existingRows.length === 0;

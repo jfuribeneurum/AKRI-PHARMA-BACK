@@ -115,6 +115,24 @@ describe('dispensacion-hs.service dispensarMedicamento', () => {
     });
   });
 
+  it('locks the control row with FOR UPDATE to prevent two concurrent saves from overwriting each other\'s cantidad_dispensada', async () => {
+    getFormulacionHSById.mockResolvedValue(mockFormulacion());
+    routeExecute([
+      [/SELECT id FROM dispensacion_hs_control/, () => [[{ id: 55 }]]],
+      [/SELECT cantidad_formulada, cantidad_dispensada FROM/, () => [[{ cantidad_formulada: 5, cantidad_dispensada: 2 }]]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0 }]]],
+      [/SELECT \* FROM dispensacion_hs_control WHERE id = \?/, () => [[{ id: 55 }]]]
+    ]);
+
+    await dispensarMedicamento(
+      { id_formulacion_hs: 1, id_med_formulacion_hs: 10, cantidad_dispensada: 3, lotes: [{ id_lote: 3, id_ubicacion: 1, cantidad: 3 }] },
+      7, 3
+    );
+
+    const lookupCall = mockConnection.execute.mock.calls.find(([sql]) => /SELECT id FROM dispensacion_hs_control/.test(sql));
+    expect(lookupCall[0]).toMatch(/FOR UPDATE/);
+  });
+
   it('logs to controlados_libro when the resolved product is es_controlado', async () => {
     getFormulacionHSById.mockResolvedValue(mockFormulacion());
     routeExecute([
