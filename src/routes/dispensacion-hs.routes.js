@@ -101,14 +101,16 @@ dispensacionHsRouter.post('/formulacion/:id/medicamentos/:idMed/excluir', valida
     Number(req.params.idMed),
     req.body.nombre_medicamento ?? null,
     userId,
-    req.body.motivo ?? null
+    req.body.motivo ?? null,
+    req.user?.id_sede ?? null
   );
   res.json({ success: true, data: result });
 }));
 
 // DELETE /dispensacion-hs/formulacion/:id/medicamentos/:idMed/excluir — deshace la exclusión.
 dispensacionHsRouter.delete('/formulacion/:id/medicamentos/:idMed/excluir', asyncHandler(async (req, res) => {
-  const result = await restaurarMedicamentoExcluido(Number(req.params.id), Number(req.params.idMed));
+  const userId = req.user?.sub ?? null;
+  const result = await restaurarMedicamentoExcluido(Number(req.params.id), Number(req.params.idMed), userId, req.user?.id_sede ?? null);
   res.json({ success: true, data: result });
 }));
 
@@ -125,13 +127,13 @@ const medicamentoExtraSchema = z.object({
 // medicamento manual a la formulación (no existe en HealthSphere).
 dispensacionHsRouter.post('/formulacion/:id/medicamentos-extra', validate(medicamentoExtraSchema), asyncHandler(async (req, res) => {
   const userId = req.user?.sub ?? null;
-  const result = await agregarMedicamentoExtra(Number(req.params.id), req.body, userId);
+  const result = await agregarMedicamentoExtra(Number(req.params.id), req.body, userId, req.user?.id_sede ?? null);
   res.status(201).json({ success: true, data: result });
 }));
 
 // DELETE /dispensacion-hs/medicamentos-extra/:id — elimina (soft delete) un medicamento manual.
 dispensacionHsRouter.delete('/medicamentos-extra/:id', asyncHandler(async (req, res) => {
   const userId = req.user?.sub ?? null;
-  const result = await eliminarMedicamentoExtra(Number(req.params.id), userId);
+  const result = await eliminarMedicamentoExtra(Number(req.params.id), userId, req.user?.id_sede ?? null);
   res.json({ success: true, data: result });
 }));

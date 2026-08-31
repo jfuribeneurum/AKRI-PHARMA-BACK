@@ -1,6 +1,7 @@
 import { hsPool } from '../config/hs-db.js';
 import { query } from '../config/db.js';
 import { HttpError } from '../utils/http-error.js';
+import { recordProcessTrace } from './traceability.service.js';
 
 // Los medicamentos agregados manualmente (no vienen de HealthSphere) se
 // exponen con un id_med_formulacion desplazado para que nunca choque con un
@@ -202,24 +203,59 @@ export async function getFormulacionHSById(idFormulacion) {
   return { ...formulacion, medicamentos: medicamentosFinal };
 }
 
+// idFormulacion en HealthSphere es de solo lectura y viene de otra base —
+// nada impide, a nivel de tipos, que alguien mande un id que no existe.
+// Excluir o agregar medicamentos contra un id inexistente dejaría filas
+// huérfanas silenciosas en las tablas locales, así que se valida primero.
+async function assertFormulacionExiste(idFormulacionHs) {
+  const [row] = await hsQuery(
+    `SELECT Id FROM suhc_new_tbl_formulacion WHERE Id = ? AND tipo = 'medicine'`,
+    [idFormulacionHs]
+  );
+  if (!row) {
+    throw new HttpError(404, 'Formulación no encontrada en HealthSphere');
+  }
+}
+
 // "Elimina" un medicamento formulado de la vista de dispensación. El origen
 // (HealthSphere) es de solo lectura y no se toca — se guarda localmente que
 // este medicamento queda excluido, con trazabilidad de quién y cuándo.
-export async function excluirMedicamentoFormulado(idFormulacionHs, idMedFormulacionHs, nombreMedicamento, userId, motivo = null) {
+export async function excluirMedicamentoFormulado(idFormulacionHs, idMedFormulacionHs, nombreMedicamento, userId, motivo = null, idSede = null) {
+  await assertFormulacionExiste(idFormulacionHs);
   await query(
     `INSERT IGNORE INTO dispensacion_hs_exclusiones
        (id_formulacion_hs, id_med_formulacion_hs, nombre_medicamento, motivo, id_usuario)
      VALUES (?, ?, ?, ?, ?)`,
     [idFormulacionHs, idMedFormulacionHs, nombreMedicamento ?? null, motivo, userId ?? null]
   );
+  await recordProcessTrace(null, {
+    proceso: 'DISPENSACION',
+    subproceso: 'EXCLUIR_MEDICAMENTO_FORMULACION',
+    id_sede: idSede,
+    id_usuario: userId ?? null,
+    referencia_tipo: 'FORMULACION_HS',
+    referencia_id: idFormulacionHs,
+    descripcion: `Medicamento excluido de la dispensación: ${nombreMedicamento ?? ''}`.trim(),
+    payload_json: { id_med_formulacion_hs: idMedFormulacionHs, motivo: motivo ?? null }
+  });
   return { id_formulacion_hs: idFormulacionHs, id_med_formulacion_hs: idMedFormulacionHs, excluido: true };
 }
 
-export async function restaurarMedicamentoExcluido(idFormulacionHs, idMedFormulacionHs) {
+export async function restaurarMedicamentoExcluido(idFormulacionHs, idMedFormulacionHs, userId = null, idSede = null) {
   await query(
     `DELETE FROM dispensacion_hs_exclusiones WHERE id_formulacion_hs = ? AND id_med_formulacion_hs = ?`,
     [idFormulacionHs, idMedFormulacionHs]
   );
+  await recordProcessTrace(null, {
+    proceso: 'DISPENSACION',
+    subproceso: 'RESTAURAR_MEDICAMENTO_EXCLUIDO',
+    id_sede: idSede,
+    id_usuario: userId ?? null,
+    referencia_tipo: 'FORMULACION_HS',
+    referencia_id: idFormulacionHs,
+    descripcion: 'Medicamento restaurado a la dispensación (exclusión deshecha)',
+    payload_json: { id_med_formulacion_hs: idMedFormulacionHs }
+  });
   return { id_formulacion_hs: idFormulacionHs, id_med_formulacion_hs: idMedFormulacionHs, excluido: false };
 }
 
@@ -228,8 +264,10 @@ export async function restaurarMedicamentoExcluido(idFormulacionHs, idMedFormula
 // producto ya existente en el Maestro local (id_producto), nunca texto
 // libre — así queda disponible para dispensar (descuento de inventario por
 // lote) igual que el resto de medicamentos.
-export async function agregarMedicamentoExtra(idFormulacionHs, payload, userId) {
+export async function agregarMedicamentoExtra(idFormulacionHs, payload, userId, idSede = null) {
   const { id_producto, presentacion = null, via_administracion = null, cantidad, diagnostico = null, observaciones = null } = payload;
+
+  await assertFormulacionExiste(idFormulacionHs);
 
   const [producto] = await query(`SELECT nombre_comercial FROM productos WHERE id_producto = ? AND activo = TRUE`, [id_producto]);
   if (!producto) {
@@ -243,14 +281,71 @@ export async function agregarMedicamentoExtra(idFormulacionHs, payload, userId) 
     [idFormulacionHs, id_producto, producto.nombre_comercial, presentacion, via_administracion, cantidad, diagnostico, observaciones, userId ?? null]
   );
 
+  await recordProcessTrace(null, {
+    proceso: 'DISPENSACION',
+    subproceso: 'AGREGAR_MEDICAMENTO_EXTRA',
+    id_sede: idSede,
+    id_usuario: userId ?? null,
+    referencia_tipo: 'FORMULACION_HS',
+    referencia_id: idFormulacionHs,
+    descripcion: `Medicamento manual agregado: ${producto.nombre_comercial}`,
+    payload_json: { id_producto, cantidad, presentacion, via_administracion }
+  });
+
   return { id_med_formulacion: MEDICAMENTO_EXTRA_ID_OFFSET + Number(result.insertId), esManual: true };
 }
 
-export async function eliminarMedicamentoExtra(idMedicamentoExtra, userId) {
-  const [row] = await query(`SELECT id FROM dispensacion_hs_medicamentos_extra WHERE id = ? AND activo = 1`, [idMedicamentoExtra]);
+// total_medicamentos (de listFormulacionesHS) cuenta directo lo que hay en
+// HealthSphere, sin restar exclusiones ni sumar medicamentos manuales — eso
+// desincroniza el estado agregado (Pendiente/Parcial/Dispensado) de la lista
+// y el filtro por estado, que dependen de comparar dispensados vs ese total.
+// Esta función trae, para un lote de formulaciones, cuántos están excluidos
+// y cuántos manuales activos tiene cada una, para poder corregir el total.
+export async function getExclusionYExtraCounts(idsFormulacion) {
+  const result = {};
+  for (const id of idsFormulacion) result[id] = { excluidos: 0, extras: 0 };
+  if (!idsFormulacion.length) return result;
+
+  const placeholders = idsFormulacion.map(() => '?').join(',');
+  const [exclusiones, extras] = await Promise.all([
+    query(
+      `SELECT id_formulacion_hs, COUNT(*) AS n
+         FROM dispensacion_hs_exclusiones
+        WHERE id_formulacion_hs IN (${placeholders})
+        GROUP BY id_formulacion_hs`,
+      idsFormulacion
+    ),
+    query(
+      `SELECT id_formulacion_hs, COUNT(*) AS n
+         FROM dispensacion_hs_medicamentos_extra
+        WHERE id_formulacion_hs IN (${placeholders}) AND activo = 1
+        GROUP BY id_formulacion_hs`,
+      idsFormulacion
+    )
+  ]);
+  for (const r of exclusiones) result[r.id_formulacion_hs].excluidos = Number(r.n);
+  for (const r of extras) result[r.id_formulacion_hs].extras = Number(r.n);
+  return result;
+}
+
+export async function eliminarMedicamentoExtra(idMedicamentoExtra, userId, idSede = null) {
+  const [row] = await query(
+    `SELECT id, id_formulacion_hs, nombre_medicamento FROM dispensacion_hs_medicamentos_extra WHERE id = ? AND activo = 1`,
+    [idMedicamentoExtra]
+  );
   if (!row) {
     throw new HttpError(404, 'Medicamento manual no encontrado');
   }
   await query(`UPDATE dispensacion_hs_medicamentos_extra SET activo = 0 WHERE id = ?`, [idMedicamentoExtra]);
+  await recordProcessTrace(null, {
+    proceso: 'DISPENSACION',
+    subproceso: 'ELIMINAR_MEDICAMENTO_EXTRA',
+    id_sede: idSede,
+    id_usuario: userId ?? null,
+    referencia_tipo: 'FORMULACION_HS',
+    referencia_id: row.id_formulacion_hs,
+    descripcion: `Medicamento manual eliminado: ${row.nombre_medicamento ?? ''}`.trim(),
+    payload_json: { id_medicamento_extra: idMedicamentoExtra }
+  });
   return { id: idMedicamentoExtra, eliminado: true };
 }

@@ -21,7 +21,8 @@ const {
   excluirMedicamentoFormulado,
   restaurarMedicamentoExcluido,
   agregarMedicamentoExtra,
-  eliminarMedicamentoExtra
+  eliminarMedicamentoExtra,
+  getExclusionYExtraCounts
 } = await import('../formulacion-hs.service.js');
 
 describe('formulacion-hs.service getFormulacionHSById', () => {
@@ -123,47 +124,77 @@ describe('formulacion-hs.service getFormulacionHSById', () => {
 describe('excluirMedicamentoFormulado / restaurarMedicamentoExcluido', () => {
   beforeEach(() => {
     query.mockReset();
+    mockHsConnection.query.mockReset();
   });
 
-  it('inserts (INSERT IGNORE) an exclusion row scoped to the formulación and medicamento', async () => {
-    query.mockResolvedValueOnce({ affectedRows: 1 });
+  it('inserts (INSERT IGNORE) an exclusion row scoped to the formulación and medicamento, and traces it', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[{ Id: 7 }]]); // assertFormulacionExiste
+    query
+      .mockResolvedValueOnce({ affectedRows: 1 }) // INSERT IGNORE exclusiones
+      .mockResolvedValueOnce({}); // recordProcessTrace
 
-    const result = await excluirMedicamentoFormulado(7, 11, 'ABACAVIR 300 MG', 99, 'fuera de stock');
+    const result = await excluirMedicamentoFormulado(7, 11, 'ABACAVIR 300 MG', 99, 'fuera de stock', 3);
 
     expect(result).toEqual({ id_formulacion_hs: 7, id_med_formulacion_hs: 11, excluido: true });
     const [sql, params] = query.mock.calls[0];
     expect(sql).toMatch(/INSERT IGNORE INTO dispensacion_hs_exclusiones/);
     expect(params).toEqual([7, 11, 'ABACAVIR 300 MG', 'fuera de stock', 99]);
+    const [traceSql, traceParams] = query.mock.calls[1];
+    expect(traceSql).toMatch(/INSERT INTO procesos_terminados_trazabilidad/);
+    expect(traceParams).toEqual(expect.arrayContaining(['EXCLUIR_MEDICAMENTO_FORMULACION']));
   });
 
-  it('restaurarMedicamentoExcluido deletes the exclusion row for that formulación/medicamento', async () => {
-    query.mockResolvedValueOnce({ affectedRows: 1 });
+  it('rejects with 404 when the formulación does not exist in HealthSphere', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[]]); // sin fila
 
-    const result = await restaurarMedicamentoExcluido(7, 11);
+    await expect(excluirMedicamentoFormulado(999, 11, 'X', 1))
+      .rejects.toMatchObject({ status: 404 });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('restaurarMedicamentoExcluido deletes the exclusion row for that formulación/medicamento and traces it', async () => {
+    query
+      .mockResolvedValueOnce({ affectedRows: 1 })
+      .mockResolvedValueOnce({});
+
+    const result = await restaurarMedicamentoExcluido(7, 11, 99, 3);
 
     expect(result).toEqual({ id_formulacion_hs: 7, id_med_formulacion_hs: 11, excluido: false });
     const [sql, params] = query.mock.calls[0];
     expect(sql).toMatch(/DELETE FROM dispensacion_hs_exclusiones/);
     expect(params).toEqual([7, 11]);
+    expect(query.mock.calls[1][0]).toMatch(/INSERT INTO procesos_terminados_trazabilidad/);
   });
 });
 
 describe('agregarMedicamentoExtra / eliminarMedicamentoExtra', () => {
   beforeEach(() => {
     query.mockReset();
+    mockHsConnection.query.mockReset();
+  });
+
+  it('rejects with 404 when the formulación does not exist in HealthSphere', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[]]);
+
+    await expect(agregarMedicamentoExtra(999, { id_producto: 42, cantidad: 2 }, 1))
+      .rejects.toMatchObject({ status: 404 });
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('rejects with 404 when id_producto does not exist (or is inactive) in the Maestro', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[{ Id: 7 }]]); // assertFormulacionExiste
     query.mockResolvedValueOnce([]); // SELECT nombre_comercial → sin fila
 
     await expect(agregarMedicamentoExtra(7, { id_producto: 999, cantidad: 2 }, 1))
       .rejects.toMatchObject({ status: 404 });
   });
 
-  it("inserts using the product's own nombre_comercial from the Maestro, never client-supplied text", async () => {
+  it("inserts using the product's own nombre_comercial from the Maestro, never client-supplied text, and traces it", async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[{ Id: 7 }]]); // assertFormulacionExiste
     query
       .mockResolvedValueOnce([{ nombre_comercial: 'IBUPROFENO 400 MG' }]) // SELECT productos
-      .mockResolvedValueOnce({ insertId: 123 }); // INSERT
+      .mockResolvedValueOnce({ insertId: 123 }) // INSERT
+      .mockResolvedValueOnce({}); // recordProcessTrace
 
     const result = await agregarMedicamentoExtra(7, {
       id_producto: 42, presentacion: 'Tableta', via_administracion: 'Oral', cantidad: 3
@@ -173,12 +204,14 @@ describe('agregarMedicamentoExtra / eliminarMedicamentoExtra', () => {
     const [sql, params] = query.mock.calls[1];
     expect(sql).toMatch(/INSERT INTO dispensacion_hs_medicamentos_extra/);
     expect(params).toEqual([7, 42, 'IBUPROFENO 400 MG', 'Tableta', 'Oral', 3, null, null, 1]);
+    expect(query.mock.calls[2][0]).toMatch(/INSERT INTO procesos_terminados_trazabilidad/);
   });
 
-  it('eliminarMedicamentoExtra soft-deletes (activo = 0) an existing manual medicamento', async () => {
+  it('eliminarMedicamentoExtra soft-deletes (activo = 0) an existing manual medicamento and traces it', async () => {
     query
-      .mockResolvedValueOnce([{ id: 5 }])
-      .mockResolvedValueOnce({ affectedRows: 1 });
+      .mockResolvedValueOnce([{ id: 5, id_formulacion_hs: 7, nombre_medicamento: 'IBUPROFENO 400 MG' }])
+      .mockResolvedValueOnce({ affectedRows: 1 })
+      .mockResolvedValueOnce({});
 
     const result = await eliminarMedicamentoExtra(5, 1);
 
@@ -186,11 +219,47 @@ describe('agregarMedicamentoExtra / eliminarMedicamentoExtra', () => {
     const [sql, params] = query.mock.calls[1];
     expect(sql).toMatch(/UPDATE dispensacion_hs_medicamentos_extra SET activo = 0/);
     expect(params).toEqual([5]);
+    expect(query.mock.calls[2][0]).toMatch(/INSERT INTO procesos_terminados_trazabilidad/);
   });
 
   it('eliminarMedicamentoExtra throws 404 when the medicamento does not exist or is already inactive', async () => {
     query.mockResolvedValueOnce([]);
 
     await expect(eliminarMedicamentoExtra(999, 1)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('getExclusionYExtraCounts (corrige total_medicamentos para el estado agregado y su filtro)', () => {
+  beforeEach(() => {
+    query.mockReset();
+  });
+
+  it('returns zero for every id when there are no exclusions or extras', async () => {
+    query.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const result = await getExclusionYExtraCounts([1, 2]);
+
+    expect(result).toEqual({ 1: { excluidos: 0, extras: 0 }, 2: { excluidos: 0, extras: 0 } });
+  });
+
+  it('fills in counts only for the formulaciones that actually have exclusions/extras, leaving the rest at zero', async () => {
+    query
+      .mockResolvedValueOnce([{ id_formulacion_hs: 1, n: 2 }])
+      .mockResolvedValueOnce([{ id_formulacion_hs: 2, n: 1 }]);
+
+    const result = await getExclusionYExtraCounts([1, 2, 3]);
+
+    expect(result).toEqual({
+      1: { excluidos: 2, extras: 0 },
+      2: { excluidos: 0, extras: 1 },
+      3: { excluidos: 0, extras: 0 }
+    });
+  });
+
+  it('short-circuits without querying when given an empty id list', async () => {
+    const result = await getExclusionYExtraCounts([]);
+
+    expect(result).toEqual({});
+    expect(query).not.toHaveBeenCalled();
   });
 });
