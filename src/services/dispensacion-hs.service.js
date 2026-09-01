@@ -101,8 +101,9 @@ export async function getHistorialEntregas(idFormulacionHs) {
   );
   if (!movimientos.length) return [];
 
-  // Una entrega anulada (ver anularEntregaHS) deja de contar como real: se
-  // excluye del histórico para que la cantidad vuelva a verse como pendiente.
+  // Una entrega anulada (ver anularEntregaHS) ya no cuenta como real para el
+  // cálculo de pendientes, pero se mantiene visible en el histórico marcada
+  // como "anulado" para conservar la trazabilidad completa.
   const idsMovimientos = movimientos.map(m => m.id_movimiento);
   const placeholdersMov = idsMovimientos.map(() => '?').join(',');
   const anulaciones = await query(
@@ -112,13 +113,12 @@ export async function getHistorialEntregas(idFormulacionHs) {
   );
   const anuladosSet = new Set(anulaciones.map(a => Number(a.referencia_id)));
 
-  return movimientos
-    .filter(m => !anuladosSet.has(Number(m.id_movimiento)))
-    .map(m => ({
-      ...m,
-      nombre_medicamento: nombrePorControl[m.referencia_id] ?? null,
-      id_med_formulacion_hs: idMedFormPorControl[m.referencia_id] ?? null
-    }));
+  return movimientos.map(m => ({
+    ...m,
+    nombre_medicamento: nombrePorControl[m.referencia_id] ?? null,
+    id_med_formulacion_hs: idMedFormPorControl[m.referencia_id] ?? null,
+    anulado: anuladosSet.has(Number(m.id_movimiento))
+  }));
 }
 
 // Anula una entrega puntual del histórico (un movimiento_inventario de tipo
