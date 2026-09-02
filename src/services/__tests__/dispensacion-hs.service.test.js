@@ -63,7 +63,7 @@ describe('dispensacion-hs.service dispensarMedicamento', () => {
     routeExecute([
       [/SELECT id FROM dispensacion_hs_control/, () => [[]]],
       [/INSERT INTO dispensacion_hs_control/, () => [{ insertId: 99 }]],
-      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0 }]]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0, id_sede: 3 }]]],
       [/SELECT \* FROM dispensacion_hs_control WHERE id = \?/, () => [[{ id: 99, contrato: 'contrato_1', regimen: 'contributivo' }]]]
     ]);
 
@@ -120,7 +120,7 @@ describe('dispensacion-hs.service dispensarMedicamento', () => {
     routeExecute([
       [/SELECT id FROM dispensacion_hs_control/, () => [[{ id: 55 }]]],
       [/SELECT cantidad_formulada, cantidad_dispensada FROM/, () => [[{ cantidad_formulada: 5, cantidad_dispensada: 2 }]]],
-      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0 }]]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0, id_sede: 3 }]]],
       [/SELECT \* FROM dispensacion_hs_control WHERE id = \?/, () => [[{ id: 55 }]]]
     ]);
 
@@ -138,7 +138,7 @@ describe('dispensacion-hs.service dispensarMedicamento', () => {
     routeExecute([
       [/SELECT id FROM dispensacion_hs_control/, () => [[]]],
       [/INSERT INTO dispensacion_hs_control/, () => [{ insertId: 99 }]],
-      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 1 }]]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 1, id_sede: 3 }]]],
       [/SELECT \* FROM dispensacion_hs_control WHERE id = \?/, () => [[{ id: 99 }]]]
     ]);
 
@@ -184,13 +184,28 @@ describe('dispensacion-hs.service dispensarMedicamento', () => {
     getFormulacionHSById.mockResolvedValue(mockFormulacion());
     routeExecute([
       [/SELECT id FROM dispensacion_hs_control/, () => [[]]],
-      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 2, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0 }]]]
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 2, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0, id_sede: 3 }]]]
     ]);
 
     await expect(dispensarMedicamento(
       { id_formulacion_hs: 1, id_med_formulacion_hs: 10, cantidad_dispensada: 5, lotes: [{ id_lote: 3, id_ubicacion: 1, cantidad: 5 }] },
       7, 3
     )).rejects.toThrow(/Stock insuficiente/);
+
+    expect(mockConnection.execute.mock.calls.some(([sql]) => /UPDATE existencias/.test(sql))).toBe(false);
+  });
+
+  it('rejects a lot that belongs to a different sede than the one dispensing, without touching inventory', async () => {
+    getFormulacionHSById.mockResolvedValue(mockFormulacion());
+    routeExecute([
+      [/SELECT id FROM dispensacion_hs_control/, () => [[]]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 4, id_producto: 7, costo_unitario: 100, es_controlado: 0, id_sede: 2 }]]]
+    ]);
+
+    await expect(dispensarMedicamento(
+      { id_formulacion_hs: 1, id_med_formulacion_hs: 10, cantidad_dispensada: 5, lotes: [{ id_lote: 3, id_ubicacion: 5, cantidad: 5 }] },
+      7, 3
+    )).rejects.toThrow(/pertenece a otra sede/);
 
     expect(mockConnection.execute.mock.calls.some(([sql]) => /UPDATE existencias/.test(sql))).toBe(false);
   });
@@ -220,7 +235,7 @@ describe('dispensacion-hs.service dispensarMedicamento', () => {
     routeExecute([
       [/SELECT id FROM dispensacion_hs_control/, () => [[{ id: 55 }]]],
       [/SELECT cantidad_formulada, cantidad_dispensada FROM/, () => [[{ cantidad_formulada: 5, cantidad_dispensada: 2 }]]],
-      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0 }]]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0, id_sede: 4 }]]],
       [/SELECT \* FROM dispensacion_hs_control WHERE id = \?/, () => [[{ id: 55, contrato: 'contrato_2', regimen: 'subsidiado' }]]]
     ]);
 
@@ -261,7 +276,7 @@ describe('dispensacion-hs.service dispensarMedicamento', () => {
     routeExecute([
       [/SELECT id FROM dispensacion_hs_control/, () => [[{ id: 55 }]]],
       [/SELECT cantidad_formulada, cantidad_dispensada FROM/, () => [[{ cantidad_formulada: 5, cantidad_dispensada: 2 }]]],
-      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0 }]]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 10, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0, id_sede: 5 }]]],
       [/SELECT \* FROM dispensacion_hs_control WHERE id = \?/, () => [[{ id: 55 }]]]
     ]);
 

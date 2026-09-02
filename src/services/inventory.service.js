@@ -676,7 +676,7 @@ export async function getInventorySummary(scope = 'general', siteId = null, sear
   );
 }
 
-export async function getStockByProductId(idProducto) {
+export async function getStockByProductId(idProducto, idSede = null) {
   return query(
     `SELECT
         l.id_lote,
@@ -695,9 +695,10 @@ export async function getStockByProductId(idProducto) {
      INNER JOIN productos p ON p.id_producto = l.id_producto
      LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
      WHERE l.id_producto = ?
+       AND (? IS NULL OR a.id_sede = ?)
        AND COALESCE(e.cantidad_disponible, 0) > 0
      ORDER BY l.fecha_vencimiento ASC`,
-    [idProducto]
+    [idProducto, idSede, idSede]
   );
 }
 

@@ -16,7 +16,7 @@ vi.mock('../traceability.service.js', () => ({
 
 const { query, withTransaction } = await import('../../config/db.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
-const { listStock, getInventoryLookups, registerBarcodeIngress, registerBarcodeEgress } = await import('../inventory.service.js');
+const { listStock, getInventoryLookups, getStockByProductId, registerBarcodeIngress, registerBarcodeEgress } = await import('../inventory.service.js');
 
 // Router genérico para connection.execute, mismo patrón que dispensacion-hs
 // y sale.service.test.js: {patrón: () => filas}, el resto de INSERT/UPDATE
@@ -69,6 +69,19 @@ describe('inventory.service warehouse scoping', () => {
     await getInventoryLookups();
     const [, almacenesParams] = query.mock.calls[0];
     expect(almacenesParams).toEqual([null, null]);
+  });
+
+  it('getStockByProductId filters by the almacén\'s sede when idSede is given, so a formulación never offers another sede\'s lots for dispensing', async () => {
+    await getStockByProductId(7, 3);
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/a\.id_sede = \?/);
+    expect(params).toEqual([7, 3, 3]);
+  });
+
+  it('getStockByProductId is unscoped (passes null) when no idSede is given', async () => {
+    await getStockByProductId(7);
+    const [, params] = query.mock.calls[0];
+    expect(params).toEqual([7, null, null]);
   });
 });
 

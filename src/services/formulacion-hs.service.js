@@ -9,6 +9,10 @@ import { recordProcessTrace } from './traceability.service.js';
 // el mismo flujo de dispensación (dispensacion_hs_control) que los de HS.
 const MEDICAMENTO_EXTRA_ID_OFFSET = 900000000;
 
+function normalizeMedText(s) {
+  return (s ?? '').toString().trim().toUpperCase().replace(/\s+/g, ' ');
+}
+
 async function hsQuery(sql, params = []) {
   let connection;
   try {
@@ -157,9 +161,37 @@ export async function getFormulacionHSById(idFormulacion) {
     );
     productoPorIdHs = Object.fromEntries(rows.map(r => [r.id_medicamento_hs, r.id_producto]));
   }
+
+  // HealthSphere no reutiliza un idMedicamento estable por fármaco entre
+  // formulaciones distintas (la misma "AGUJA INSULINA 31G X4MM" trae
+  // cientos de idMedicamento diferentes en su historial) — cuando el id
+  // exacto no matchea contra productos.id_medicamento_hs, se resuelve por
+  // nombre normalizado contra el Maestro local en vez de dejarlo sin MX.
+  const textosSinMatch = [...new Set(
+    medicamentos
+      .filter(m => !productoPorIdHs[m.idMedicamento])
+      .map(m => normalizeMedText(m.nombre_medicamento))
+      .filter(Boolean)
+  )];
+  let productoPorTexto = {};
+  if (textosSinMatch.length) {
+    const catalogo = await query(
+      `SELECT id_producto, nombre_comercial, principio_activo FROM productos WHERE activo = TRUE`
+    );
+    const porTexto = new Map();
+    for (const p of catalogo) {
+      for (const clave of [normalizeMedText(p.nombre_comercial), normalizeMedText(p.principio_activo)]) {
+        if (clave && !porTexto.has(clave)) porTexto.set(clave, p.id_producto);
+      }
+    }
+    for (const texto of textosSinMatch) {
+      if (porTexto.has(texto)) productoPorTexto[texto] = porTexto.get(texto);
+    }
+  }
+
   const medicamentosEnriquecidos = medicamentos.map(m => ({
     ...m,
-    idProductoLocal: productoPorIdHs[m.idMedicamento] ?? null,
+    idProductoLocal: productoPorIdHs[m.idMedicamento] ?? productoPorTexto[normalizeMedText(m.nombre_medicamento)] ?? null,
     esManual: false
   }));
 

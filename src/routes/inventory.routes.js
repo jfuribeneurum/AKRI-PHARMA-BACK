@@ -182,7 +182,7 @@ inventoryRouter.get(
     if (!Number.isFinite(id) || id < 1) {
       return res.status(400).json({ success: false, message: 'ID inválido' });
     }
-    const data = await getStockByProductId(id);
+    const data = await getStockByProductId(id, req.user?.id_sede ?? null);
     res.json({ success: true, data });
   })
 );

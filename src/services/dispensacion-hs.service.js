@@ -389,10 +389,11 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
       for (const linea of lotes) {
         const [stockRows] = await connection.execute(
           `SELECT e.id_existencia, e.cantidad_disponible, e.id_almacen,
-                  l.id_producto, l.costo_unitario, p.es_controlado
+                  l.id_producto, l.costo_unitario, p.es_controlado, a.id_sede
              FROM existencias e
              INNER JOIN lotes l ON l.id_lote = e.id_lote
              INNER JOIN productos p ON p.id_producto = l.id_producto
+             INNER JOIN almacenes a ON a.id_almacen = e.id_almacen
             WHERE e.id_lote = ? AND e.id_ubicacion = ?
             FOR UPDATE`,
           [linea.id_lote, linea.id_ubicacion]
@@ -400,6 +401,9 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
         const stock = stockRows[0];
         if (!stock) {
           throw new HttpError(404, `No hay existencias para el lote ${linea.id_lote} en la ubicación indicada.`);
+        }
+        if (idSede != null && Number(stock.id_sede) !== Number(idSede)) {
+          throw new HttpError(403, `El lote ${linea.id_lote} pertenece a otra sede — no se puede dispensar desde aquí.`);
         }
         if (Number(stock.cantidad_disponible) < Number(linea.cantidad)) {
           throw new HttpError(400,
