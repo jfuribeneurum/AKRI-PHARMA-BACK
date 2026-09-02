@@ -73,7 +73,7 @@ formulacionHsRouter.get('/', asyncHandler(async (req, res) => {
 // GET /formulaciones-hs/:id
 formulacionHsRouter.get('/:id', asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
-  const formulacion = await getFormulacionHSById(id);
+  const formulacion = await getFormulacionHSById(id, req.user?.id_sede ?? null);
 
   if (!formulacion) {
     return res.status(404).json({ success: false, message: 'Formulación no encontrada' });

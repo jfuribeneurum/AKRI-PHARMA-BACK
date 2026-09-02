@@ -53,6 +53,30 @@ describe('formulacion-hs.service getFormulacionHSById', () => {
     expect(params).toEqual([1, 2]);
   });
 
+  it("when two local productos share the same id_medicamento_hs (two brands of the same generic, e.g. lancetas Accu-Chek vs Glucoquick), resolves to whichever actually has stock in the caller's sede instead of an arbitrary duplicate", async () => {
+    mockHsConnection.query
+      .mockResolvedValueOnce([[{ id_formulacion: 1, idPaciente: 1 }]])
+      .mockResolvedValueOnce([[
+        { id_med_formulacion: 10, idMedicamento: 5, nombre_medicamento: 'LANCETAS PARA GLUCOMETRIA', cantidad: 5 }
+      ]]);
+    query
+      .mockResolvedValueOnce([
+        { id_medicamento_hs: 5, id_producto: 416 },
+        { id_medicamento_hs: 5, id_producto: 415 }
+      ]) // productos.id_medicamento_hs — dos candidatos para el mismo genérico
+      .mockResolvedValueOnce([{ id_producto: 415, total: 177600 }]) // stock por sede: solo 415 tiene
+      .mockResolvedValueOnce([]) // dispensacion_hs_medicamentos_extra
+      .mockResolvedValueOnce([]); // dispensacion_hs_exclusiones
+
+    const result = await getFormulacionHSById(1, 1);
+
+    expect(result.medicamentos[0]).toMatchObject({ idMedicamento: 5, idProductoLocal: 415 });
+
+    const [stockSql, stockParams] = query.mock.calls[1];
+    expect(stockSql).toMatch(/a\.id_sede = \?/);
+    expect(stockParams).toEqual([416, 415, 1]);
+  });
+
   it('does not query productos.id_medicamento_hs when there are no medicamentos with an idMedicamento', async () => {
     mockHsConnection.query
       .mockResolvedValueOnce([[{ id_formulacion: 1, idPaciente: 1 }]])

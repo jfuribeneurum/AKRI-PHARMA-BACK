@@ -93,7 +93,7 @@ export async function listFormulacionesHS({ search = '', page = 1, limit = 30, f
   };
 }
 
-export async function getFormulacionHSById(idFormulacion) {
+export async function getFormulacionHSById(idFormulacion, idSede = null) {
   const [formulacion] = await hsQuery(
     `SELECT
         f.Id                AS id_formulacion,
@@ -151,47 +151,94 @@ export async function getFormulacionHSById(idFormulacion) {
   // el id_producto real (si el medicamento ya está enlazado en Maestro) para
   // que el modal de dispensación pueda consultar/descontar el inventario
   // local correcto, en vez de usar el id de HS como si fuera un id_producto.
+  //
+  // Dos problemas reales del catálogo de HealthSphere obligan a que esto sea
+  // más que un simple lookup 1:1:
+  //  1) HS no reutiliza un idMedicamento estable por fármaco entre
+  //     formulaciones (la misma "AGUJA INSULINA 31G X4MM" trae cientos de
+  //     idMedicamento distintos en su historial) — cuando el id exacto no
+  //     matchea contra productos.id_medicamento_hs, se resuelve por nombre
+  //     normalizado contra el Maestro local.
+  //  2) Un mismo genérico de HS a veces corresponde a más de un producto
+  //     local (dos marcas distintas, ej. lancetas Accu-Chek vs Glucoquick,
+  //     cargadas para sedes distintas) — cuando hay más de un candidato para
+  //     el mismo idMedicamento/nombre, se desempata por cuál tiene stock real
+  //     en la sede de quien dispensa, en vez de quedarse con el que llegue
+  //     último de una consulta sin ORDER BY.
   const idsHs = [...new Set(medicamentos.map(m => m.idMedicamento).filter(Boolean))];
-  let productoPorIdHs = {};
+  const candidatosPorIdHs = new Map();
   if (idsHs.length) {
     const placeholders = idsHs.map(() => '?').join(',');
     const rows = await query(
       `SELECT id_medicamento_hs, id_producto FROM productos WHERE id_medicamento_hs IN (${placeholders})`,
       idsHs
     );
-    productoPorIdHs = Object.fromEntries(rows.map(r => [r.id_medicamento_hs, r.id_producto]));
+    for (const r of rows) {
+      const arr = candidatosPorIdHs.get(r.id_medicamento_hs) ?? [];
+      arr.push(r.id_producto);
+      candidatosPorIdHs.set(r.id_medicamento_hs, arr);
+    }
   }
 
-  // HealthSphere no reutiliza un idMedicamento estable por fármaco entre
-  // formulaciones distintas (la misma "AGUJA INSULINA 31G X4MM" trae
-  // cientos de idMedicamento diferentes en su historial) — cuando el id
-  // exacto no matchea contra productos.id_medicamento_hs, se resuelve por
-  // nombre normalizado contra el Maestro local en vez de dejarlo sin MX.
   const textosSinMatch = [...new Set(
     medicamentos
-      .filter(m => !productoPorIdHs[m.idMedicamento])
+      .filter(m => !candidatosPorIdHs.get(m.idMedicamento)?.length)
       .map(m => normalizeMedText(m.nombre_medicamento))
       .filter(Boolean)
   )];
-  let productoPorTexto = {};
+  const candidatosPorTexto = new Map();
   if (textosSinMatch.length) {
     const catalogo = await query(
       `SELECT id_producto, nombre_comercial, principio_activo FROM productos WHERE activo = TRUE`
     );
-    const porTexto = new Map();
     for (const p of catalogo) {
       for (const clave of [normalizeMedText(p.nombre_comercial), normalizeMedText(p.principio_activo)]) {
-        if (clave && !porTexto.has(clave)) porTexto.set(clave, p.id_producto);
+        if (!clave || !textosSinMatch.includes(clave)) continue;
+        const arr = candidatosPorTexto.get(clave) ?? [];
+        if (!arr.includes(p.id_producto)) arr.push(p.id_producto);
+        candidatosPorTexto.set(clave, arr);
       }
     }
-    for (const texto of textosSinMatch) {
-      if (porTexto.has(texto)) productoPorTexto[texto] = porTexto.get(texto);
-    }
+  }
+
+  const candidatosDe = (m) =>
+    candidatosPorIdHs.get(m.idMedicamento) ?? candidatosPorTexto.get(normalizeMedText(m.nombre_medicamento)) ?? [];
+
+  const idsAmbiguos = new Set();
+  for (const m of medicamentos) {
+    const candidatos = candidatosDe(m);
+    if (candidatos.length > 1) candidatos.forEach(id => idsAmbiguos.add(id));
+  }
+  const stockPorProducto = new Map();
+  if (idsAmbiguos.size) {
+    const placeholders = [...idsAmbiguos].map(() => '?').join(',');
+    const params = [...idsAmbiguos];
+    const sedeClause = idSede != null ? ' AND a.id_sede = ?' : '';
+    if (idSede != null) params.push(idSede);
+    const stockRows = await query(
+      `SELECT l.id_producto, SUM(e.cantidad_disponible) AS total
+         FROM lotes l
+         INNER JOIN existencias e ON e.id_lote = l.id_lote
+         INNER JOIN almacenes a ON a.id_almacen = e.id_almacen
+        WHERE l.id_producto IN (${placeholders})${sedeClause}
+        GROUP BY l.id_producto`,
+      params
+    );
+    for (const r of stockRows) stockPorProducto.set(r.id_producto, Number(r.total));
+  }
+
+  function resolverIdProducto(m) {
+    const candidatos = candidatosDe(m);
+    if (!candidatos.length) return null;
+    if (candidatos.length === 1) return candidatos[0];
+    return [...candidatos].sort(
+      (a, b) => (stockPorProducto.get(b) ?? 0) - (stockPorProducto.get(a) ?? 0) || a - b
+    )[0];
   }
 
   const medicamentosEnriquecidos = medicamentos.map(m => ({
     ...m,
-    idProductoLocal: productoPorIdHs[m.idMedicamento] ?? productoPorTexto[normalizeMedText(m.nombre_medicamento)] ?? null,
+    idProductoLocal: resolverIdProducto(m),
     esManual: false
   }));
 

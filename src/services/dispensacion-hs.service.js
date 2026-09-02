@@ -245,7 +245,7 @@ export async function anularEntregaHS(idMovimiento, userId, idSede = null) {
 export async function dispensarMedicamento(payload, userId, idSede = null) {
   const { id_formulacion_hs, id_med_formulacion_hs } = payload;
 
-  const formulacion = await getFormulacionHSById(id_formulacion_hs);
+  const formulacion = await getFormulacionHSById(id_formulacion_hs, idSede);
   if (!formulacion) {
     throw new HttpError(404, 'Formulación no encontrada en HealthSphere');
   }
