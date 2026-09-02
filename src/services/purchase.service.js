@@ -152,7 +152,7 @@ export async function createPurchaseOrder(payload, user) {
 
     return {
       id_oc: headerResult.insertId,
-      numero_oc: payload.numero_oc,
+      numero_oc,
       id_sede: site.id_sede,
       sede: site.nombre,
       ...totals

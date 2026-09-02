@@ -13,6 +13,15 @@ function normalizeMedText(s) {
   return (s ?? '').toString().trim().toUpperCase().replace(/\s+/g, ' ');
 }
 
+// HealthSphere y el Maestro local a veces escriben el mismo nombre con
+// espacios distintos entre número y unidad ("X4 MM" vs "X4MM", "50 MG" vs
+// "50MG") — quitar todos los espacios es un match mecánico seguro (mismo
+// texto, cero ambigüedad clínica), a diferencia de intentar equiparar formas
+// farmacéuticas distintas (tableta/cápsula), que sí requiere criterio humano.
+function stripSpaces(s) {
+  return normalizeMedText(s).replace(/\s+/g, '');
+}
+
 async function hsQuery(sql, params = []) {
   let connection;
   try {
@@ -187,22 +196,34 @@ export async function getFormulacionHSById(idFormulacion, idSede = null) {
       .filter(Boolean)
   )];
   const candidatosPorTexto = new Map();
+  const candidatosPorTextoSinEspacios = new Map();
   if (textosSinMatch.length) {
     const catalogo = await query(
       `SELECT id_producto, nombre_comercial, principio_activo FROM productos WHERE activo = TRUE`
     );
     for (const p of catalogo) {
-      for (const clave of [normalizeMedText(p.nombre_comercial), normalizeMedText(p.principio_activo)]) {
-        if (!clave || !textosSinMatch.includes(clave)) continue;
-        const arr = candidatosPorTexto.get(clave) ?? [];
-        if (!arr.includes(p.id_producto)) arr.push(p.id_producto);
-        candidatosPorTexto.set(clave, arr);
+      for (const raw of [p.nombre_comercial, p.principio_activo]) {
+        const clave = normalizeMedText(raw);
+        if (clave && textosSinMatch.includes(clave)) {
+          const arr = candidatosPorTexto.get(clave) ?? [];
+          if (!arr.includes(p.id_producto)) arr.push(p.id_producto);
+          candidatosPorTexto.set(clave, arr);
+        }
+        const claveSinEspacios = stripSpaces(raw);
+        if (claveSinEspacios) {
+          const arr = candidatosPorTextoSinEspacios.get(claveSinEspacios) ?? [];
+          if (!arr.includes(p.id_producto)) arr.push(p.id_producto);
+          candidatosPorTextoSinEspacios.set(claveSinEspacios, arr);
+        }
       }
     }
   }
 
   const candidatosDe = (m) =>
-    candidatosPorIdHs.get(m.idMedicamento) ?? candidatosPorTexto.get(normalizeMedText(m.nombre_medicamento)) ?? [];
+    candidatosPorIdHs.get(m.idMedicamento) ??
+    candidatosPorTexto.get(normalizeMedText(m.nombre_medicamento)) ??
+    candidatosPorTextoSinEspacios.get(stripSpaces(m.nombre_medicamento)) ??
+    [];
 
   const idsAmbiguos = new Set();
   for (const m of medicamentos) {

@@ -72,8 +72,11 @@ purchasesRouter.get(
 purchasesRouter.get(
   '/warehouses',
   authRequired,
-  asyncHandler(async (req, res) => {
-    const data = await listWarehousesForPO(req.user.id_sede ?? null);
+  asyncHandler(async (_req, res) => {
+    // Las órdenes de compra se crean desde la sede central hacia cualquier
+    // sede destino — este picker debe listar las 4 sedes siempre, no solo la
+    // del usuario que está creando la orden.
+    const data = await listWarehousesForPO(null);
     res.json({ success: true, data });
   })
 );
