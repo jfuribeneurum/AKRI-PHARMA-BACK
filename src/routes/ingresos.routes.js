@@ -311,6 +311,36 @@ async function actualizarInventario(connection, productoTexto, referencia, ingre
 }
 
 // ──────────────────────────────────────────────
+// Consecutivo automático para ingresos "sin orden" (ING-001, ING-002, ...) —
+// antes se generaba como `ING-PHARMA-${Date.now()}` en un input editable,
+// lo que dejaba consecutivos ilegibles y corruptibles por edición manual.
+// ──────────────────────────────────────────────
+async function nextIngresoConsecutivo(connection) {
+  const [rows] = await connection.query(
+    `SELECT referencia FROM ingresos WHERE referencia REGEXP '^ING-[0-9]+' FOR UPDATE`
+  );
+  let max = 0;
+  for (const { referencia } of rows) {
+    const match = /^ING-(\d+)/.exec(referencia);
+    if (match) max = Math.max(max, parseInt(match[1], 10));
+  }
+  return `ING-${String(max + 1).padStart(3, '0')}`;
+}
+
+// ──────────────────────────────────────────────
+// GET /ingresos/next-number
+// ──────────────────────────────────────────────
+router.get('/next-number', asyncHandler(async (_req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const numero_ingreso = await nextIngresoConsecutivo(connection);
+    res.json({ success: true, data: { numero_ingreso } });
+  } finally {
+    connection.release();
+  }
+}));
+
+// ──────────────────────────────────────────────
 // GET /ingresos
 // ──────────────────────────────────────────────
 router.get('/', asyncHandler(async (req, res) => {

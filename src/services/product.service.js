@@ -102,8 +102,8 @@ export async function listLaboratorios() {
 }
 
 export async function listAllProductsForPO() {
-  return query(
-    `SELECT p.id_producto, p.sku, p.codigo_control, p.codigo_barras, p.nombre_comercial, p.principio_activo,
+  const rows = await query(
+    `SELECT p.id_producto, p.id_medicamento_hs, p.sku, p.codigo_control, p.codigo_barras, p.nombre_comercial, p.principio_activo,
             p.concentracion, p.presentacion, p.iva_tasa,
             COALESCE(NULLIF(p.costo_referencia, 0), last_oc.precio_unitario, 0) AS costo_referencia,
             COALESCE(NULLIF(p.precio_venta, 0), last_oc.precio_venta_oc, 0) AS precio_venta,
@@ -121,11 +121,12 @@ export async function listAllProductsForPO() {
       WHERE p.activo = TRUE
       ORDER BY p.nombre_comercial ASC`
   );
+  return enrichWithMedicamentoHsNombre(rows);
 }
 
 export async function listProductsByLaboratorio(idLaboratorio) {
-  return query(
-    `SELECT p.id_producto, p.sku, p.codigo_barras, p.nombre_comercial, p.principio_activo,
+  const rows = await query(
+    `SELECT p.id_producto, p.id_medicamento_hs, p.sku, p.codigo_barras, p.nombre_comercial, p.principio_activo,
             p.concentracion, p.presentacion, p.iva_tasa,
             COALESCE(NULLIF(p.costo_referencia, 0), last_oc.precio_unitario, 0) AS costo_referencia,
             COALESCE(NULLIF(p.precio_venta, 0), last_oc.precio_venta_oc, 0) AS precio_venta,
@@ -144,6 +145,15 @@ export async function listProductsByLaboratorio(idLaboratorio) {
       ORDER BY p.nombre_comercial ASC`,
     [idLaboratorio]
   );
+  return enrichWithMedicamentoHsNombre(rows);
+}
+
+async function enrichWithMedicamentoHsNombre(rows) {
+  const nombresHs = await getMedicamentoHsNombres(rows.map(r => r.id_medicamento_hs));
+  return rows.map(r => ({
+    ...r,
+    nombre_medicamento_hs: r.id_medicamento_hs ? (nombresHs[r.id_medicamento_hs] ?? null) : null
+  }));
 }
 
 export async function listProducts(search = '', idLaboratorio = null, lote = '') {
@@ -196,11 +206,7 @@ export async function listProducts(search = '', idLaboratorio = null, lote = '')
     [env.PUBLIC_UPLOAD_BASE_URL, search, wildcard, wildcard, wildcard, wildcard, wildcard, wildcard, idLaboratorio, idLaboratorio, lote, loteWildcard]
   );
 
-  const nombresHs = await getMedicamentoHsNombres(rows.map(r => r.id_medicamento_hs));
-  return rows.map(r => ({
-    ...r,
-    nombre_medicamento_hs: r.id_medicamento_hs ? (nombresHs[r.id_medicamento_hs] ?? null) : null
-  }));
+  return enrichWithMedicamentoHsNombre(rows);
 }
 
 
