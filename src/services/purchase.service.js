@@ -1,6 +1,7 @@
 import { query, withTransaction } from '../config/db.js';
 import { HttpError } from '../utils/http-error.js';
 import { recordProcessTrace } from './traceability.service.js';
+import { enrichWithMedicamentoHsNombre } from './product.service.js';
 
 function calculateTotals(items) {
   return items.reduce((acc, item) => {
@@ -179,7 +180,7 @@ export async function getPurchaseOrder(idOc) {
   const items = await query(
     `SELECT ocd.id_oc_detalle, ocd.id_producto, ocd.cantidad, ocd.precio_unitario,
             ocd.precio_venta, ocd.costo_referencia,
-            prod.nombre_comercial, prod.concentracion, prod.principio_activo,
+            prod.nombre_comercial, prod.concentracion, prod.principio_activo, prod.id_medicamento_hs,
             COALESCE(prod.codigo_control, prod.sku) AS codigo,
             prod.id_laboratorio, lab.nombre AS laboratorio_nombre
        FROM ordenes_compra_detalle ocd
@@ -190,7 +191,14 @@ export async function getPurchaseOrder(idOc) {
     [idOc]
   );
 
-  return { ...header, items };
+  // El PDF de la orden debe mostrar el mismo nombre que el pharmacist vio y
+  // eligió en el selector de MX al armar la orden (que prioriza el nombre
+  // de HealthSphere sobre el nombre_comercial local) — no el nombre_comercial
+  // crudo, que puede ser el mismo texto genérico para varios productos
+  // distintos (ej. varias marcas cargadas como "ESPEROCT").
+  const itemsEnriquecidos = await enrichWithMedicamentoHsNombre(items);
+
+  return { ...header, items: itemsEnriquecidos };
 }
 
 export async function updatePurchaseOrder(idOc, payload, user) {

@@ -148,7 +148,7 @@ export async function listProductsByLaboratorio(idLaboratorio) {
   return enrichWithMedicamentoHsNombre(rows);
 }
 
-async function enrichWithMedicamentoHsNombre(rows) {
+export async function enrichWithMedicamentoHsNombre(rows) {
   const nombresHs = await getMedicamentoHsNombres(rows.map(r => r.id_medicamento_hs));
   return rows.map(r => ({
     ...r,

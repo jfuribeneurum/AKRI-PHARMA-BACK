@@ -11,6 +11,11 @@ vi.mock('../traceability.service.js', () => ({
   recordProcessTrace: vi.fn()
 }));
 
+const mockHsConnection = { query: vi.fn(), release: vi.fn() };
+vi.mock('../../config/hs-db.js', () => ({
+  hsPool: { getConnection: vi.fn(async () => mockHsConnection) }
+}));
+
 const { query, withTransaction } = await import('../../config/db.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
 const {
@@ -236,6 +241,7 @@ describe('purchase.service receivePurchaseOrder item processing', () => {
 describe('purchase.service getPurchaseOrder', () => {
   beforeEach(() => {
     query.mockReset();
+    mockHsConnection.query.mockReset();
   });
 
   it('enriches the header with sede_telefono and the resolved creador/aprobador names', async () => {
@@ -250,6 +256,41 @@ describe('purchase.service getPurchaseOrder', () => {
     expect(sql).toMatch(/s\.telefono AS sede_telefono/);
     expect(sql).toMatch(/uc\.nombre_completo AS creado_por_nombre/);
     expect(sql).toMatch(/ua\.nombre_completo AS aprobado_por_nombre/);
+  });
+
+  // El PDF de la orden (buildOrdenCompraHtml en el frontend) muestra el
+  // "Nombre" de cada item con el mismo criterio que el selector de MX al
+  // armar la orden: prioriza el nombre enlazado de HealthSphere sobre el
+  // nombre_comercial local. Si getPurchaseOrder no trae ese nombre, el PDF
+  // termina mostrando el nombre_comercial crudo — que puede repetirse
+  // idéntico para varios productos distintos (varias marcas cargadas bajo
+  // el mismo nombre comercial genérico) y hace imposible distinguirlos.
+  it('enriches each item with the linked HealthSphere medicamento name', async () => {
+    query
+      .mockResolvedValueOnce([{ id_oc: 7, numero_oc: 'OC-0000007' }])
+      .mockResolvedValueOnce([
+        { id_oc_detalle: 1, id_producto: 451, id_medicamento_hs: 1562, nombre_comercial: 'ESPEROCT' }
+      ]);
+    mockHsConnection.query.mockResolvedValueOnce([
+      [{ id: 1562, nombre: 'METFORMINA 850 MG TABLETA RECUBIERTA' }]
+    ]);
+
+    const oc = await getPurchaseOrder(7);
+
+    expect(oc.items[0].nombre_medicamento_hs).toBe('METFORMINA 850 MG TABLETA RECUBIERTA');
+  });
+
+  it('leaves nombre_medicamento_hs null for an item whose producto has no HealthSphere link', async () => {
+    query
+      .mockResolvedValueOnce([{ id_oc: 7, numero_oc: 'OC-0000007' }])
+      .mockResolvedValueOnce([
+        { id_oc_detalle: 1, id_producto: 900, id_medicamento_hs: null, nombre_comercial: 'ALCOHOL ANTISEPTICO' }
+      ]);
+
+    const oc = await getPurchaseOrder(7);
+
+    expect(oc.items[0].nombre_medicamento_hs).toBeNull();
+    expect(mockHsConnection.query).not.toHaveBeenCalled();
   });
 });
 
