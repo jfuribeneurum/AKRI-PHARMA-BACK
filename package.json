@@ -12,6 +12,7 @@
     "check": "node --check src/server.js",
     "init-db": "node scripts/init-db.js",
     "repair-db": "node scripts/repair-runtime-schema.js",
+    "audit:mx-links": "node scripts/audit-mx-links.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -83,6 +83,22 @@ describe('inventory.service warehouse scoping', () => {
     const [, params] = query.mock.calls[0];
     expect(params).toEqual([7, null, null]);
   });
+
+  // El catálogo tiene decenas de genéricos cargados como más de un producto
+  // local (duplicados). Si getStockByProductId solo aceptara un id, el
+  // stock de los demás candidatos quedaría invisible aunque exista.
+  it('getStockByProductId accepts an array of ids and sums stock across every duplicate producto', async () => {
+    await getStockByProductId([89, 90, 91], 1);
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/l\.id_producto IN \(\?,\?,\?\)/);
+    expect(params).toEqual([89, 90, 91, 1, 1]);
+  });
+
+  it('getStockByProductId returns an empty result without querying when given an empty array', async () => {
+    const result = await getStockByProductId([], 1);
+    expect(result).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
 });
 
 // registerBarcodeIngress/Egress movían inventario real (existencias +

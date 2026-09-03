@@ -178,11 +178,13 @@ inventoryRouter.get(
   '/stock/product/:id',
   authRequired,
   asyncHandler(async (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id) || id < 1) {
+    // :id acepta uno o varios ids separados por coma (productos duplicados
+    // del mismo genérico) para poder sumar el stock real de todos.
+    const ids = req.params.id.split(',').map(Number).filter((n) => Number.isFinite(n) && n >= 1);
+    if (!ids.length) {
       return res.status(400).json({ success: false, message: 'ID inválido' });
     }
-    const data = await getStockByProductId(id, req.user?.id_sede ?? null);
+    const data = await getStockByProductId(ids, req.user?.id_sede ?? null);
     res.json({ success: true, data });
   })
 );

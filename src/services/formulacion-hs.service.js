@@ -257,9 +257,16 @@ export async function getFormulacionHSById(idFormulacion, idSede = null) {
     )[0];
   }
 
+  // idsProductoCandidatos va aparte de idProductoLocal: cuando el mismo
+  // genérico está cargado en más de un producto local (catálogo duplicado),
+  // idProductoLocal es solo el "ganador" (más stock en la sede), pero el
+  // resto de candidatos también puede tener stock real repartido en la
+  // misma sede — el llamador (consulta de stock del modal de dispensación)
+  // necesita verlos todos para no perder ese inventario de la vista.
   const medicamentosEnriquecidos = medicamentos.map(m => ({
     ...m,
     idProductoLocal: resolverIdProducto(m),
+    idsProductoCandidatos: candidatosDe(m),
     esManual: false
   }));
 
@@ -292,6 +299,7 @@ export async function getFormulacionHSById(idFormulacion, idSede = null) {
     vigenciaFin: null,
     pbs: 0,
     idProductoLocal: e.id_producto,
+    idsProductoCandidatos: e.id_producto ? [e.id_producto] : [],
     esManual: true,
     idMedicamentoExtra: e.id
   }));

@@ -70,11 +70,77 @@ describe('formulacion-hs.service getFormulacionHSById', () => {
 
     const result = await getFormulacionHSById(1, 1);
 
-    expect(result.medicamentos[0]).toMatchObject({ idMedicamento: 5, idProductoLocal: 415 });
+    // idProductoLocal sigue siendo el "ganador" (para trazabilidad/orden),
+    // pero idsProductoCandidatos trae ambos — el stock real puede estar
+    // repartido entre los dos productos duplicados en la misma sede, y la
+    // consulta de stock del modal necesita verlos todos, no solo el ganador.
+    expect(result.medicamentos[0]).toMatchObject({
+      idMedicamento: 5,
+      idProductoLocal: 415,
+      idsProductoCandidatos: expect.arrayContaining([415, 416])
+    });
+    expect(result.medicamentos[0].idsProductoCandidatos).toHaveLength(2);
 
     const [stockSql, stockParams] = query.mock.calls[1];
     expect(stockSql).toMatch(/a\.id_sede = \?/);
     expect(stockParams).toEqual([416, 415, 1]);
+  });
+
+  it('falls back to an exact normalized-text match (nombre_comercial/principio_activo) when idMedicamento has no local link', async () => {
+    mockHsConnection.query
+      .mockResolvedValueOnce([[{ id_formulacion: 1, idPaciente: 1 }]])
+      .mockResolvedValueOnce([[
+        { id_med_formulacion: 10, idMedicamento: 999, nombre_medicamento: '  acetaminofen jarabe x 120 ml  ', cantidad: 1 }
+      ]]);
+    query
+      .mockResolvedValueOnce([]) // productos.id_medicamento_hs IN (999) → sin match por id
+      .mockResolvedValueOnce([
+        { id_producto: 17, nombre_comercial: 'ACETAMINOFEN JARABE X 120 ML', principio_activo: 'ACETAMINOFEN JARABE X 120 ML' }
+      ]) // catálogo activo, usado para el fallback de texto
+      .mockResolvedValueOnce([]) // dispensacion_hs_medicamentos_extra
+      .mockResolvedValueOnce([]); // dispensacion_hs_exclusiones
+
+    const result = await getFormulacionHSById(1);
+
+    expect(result.medicamentos[0]).toMatchObject({ idProductoLocal: 17 });
+  });
+
+  it('falls back to a whitespace-stripped match when the HS text and local text differ only in spacing', async () => {
+    mockHsConnection.query
+      .mockResolvedValueOnce([[{ id_formulacion: 1, idPaciente: 1 }]])
+      .mockResolvedValueOnce([[
+        { id_med_formulacion: 10, idMedicamento: 999, nombre_medicamento: 'AGUJA INSULINA 32G X4 MM', cantidad: 1 }
+      ]]);
+    query
+      .mockResolvedValueOnce([]) // sin match por id
+      .mockResolvedValueOnce([
+        { id_producto: 56, nombre_comercial: 'AGUJA INSULINA 32GX4MM', principio_activo: 'AGUJA INSULINA 32GX4MM' }
+      ])
+      .mockResolvedValueOnce([]) // extras
+      .mockResolvedValueOnce([]); // exclusiones
+
+    const result = await getFormulacionHSById(1);
+
+    expect(result.medicamentos[0]).toMatchObject({ idProductoLocal: 56 });
+  });
+
+  it('leaves idProductoLocal null (not an arbitrary guess) when neither id nor text match anything in the local catalog', async () => {
+    mockHsConnection.query
+      .mockResolvedValueOnce([[{ id_formulacion: 1, idPaciente: 1 }]])
+      .mockResolvedValueOnce([[
+        { id_med_formulacion: 10, idMedicamento: 999, nombre_medicamento: 'MEDICAMENTO SIN EQUIVALENTE LOCAL', cantidad: 1 }
+      ]]);
+    query
+      .mockResolvedValueOnce([]) // sin match por id
+      .mockResolvedValueOnce([
+        { id_producto: 17, nombre_comercial: 'ACETAMINOFEN JARABE X 120 ML', principio_activo: 'ACETAMINOFEN JARABE X 120 ML' }
+      ]) // catálogo activo, ninguno coincide
+      .mockResolvedValueOnce([]) // extras
+      .mockResolvedValueOnce([]); // exclusiones
+
+    const result = await getFormulacionHSById(1);
+
+    expect(result.medicamentos[0]).toMatchObject({ idProductoLocal: null });
   });
 
   it('does not query productos.id_medicamento_hs when there are no medicamentos with an idMedicamento', async () => {

@@ -676,10 +676,20 @@ export async function getInventorySummary(scope = 'general', siteId = null, sear
   );
 }
 
+// idProducto acepta un id o un arreglo de ids: el catálogo tiene decenas de
+// medicamentos cargados como más de una fila de productos para el mismo
+// genérico (mismo id_medicamento_hs, ej. lotes de importaciones distintas) —
+// si solo se consultara el id "ganador" de la resolución de la formulación,
+// el stock real que quedó en las filas duplicadas de la misma sede
+// desaparecería de la vista aunque exista físicamente.
 export async function getStockByProductId(idProducto, idSede = null) {
+  const ids = (Array.isArray(idProducto) ? idProducto : [idProducto]).filter(Boolean);
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => '?').join(',');
   return query(
     `SELECT
         l.id_lote,
+        l.id_producto,
         l.numero_lote,
         l.fecha_vencimiento,
         e.id_ubicacion,
@@ -694,11 +704,11 @@ export async function getStockByProductId(idProducto, idSede = null) {
      INNER JOIN ubicaciones_almacen u ON u.id_ubicacion = e.id_ubicacion
      INNER JOIN productos p ON p.id_producto = l.id_producto
      LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
-     WHERE l.id_producto = ?
+     WHERE l.id_producto IN (${placeholders})
        AND (? IS NULL OR a.id_sede = ?)
        AND COALESCE(e.cantidad_disponible, 0) > 0
      ORDER BY l.fecha_vencimiento ASC`,
-    [idProducto, idSede, idSede]
+    [...ids, idSede, idSede]
   );
 }
 
