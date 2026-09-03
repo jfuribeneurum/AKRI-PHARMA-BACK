@@ -22,7 +22,8 @@ const {
   restaurarMedicamentoExcluido,
   agregarMedicamentoExtra,
   eliminarMedicamentoExtra,
-  getExclusionYExtraCounts
+  getExclusionYExtraCounts,
+  listFormulacionesHS
 } = await import('../formulacion-hs.service.js');
 
 describe('formulacion-hs.service getFormulacionHSById', () => {
@@ -351,5 +352,73 @@ describe('getExclusionYExtraCounts (corrige total_medicamentos para el estado ag
 
     expect(result).toEqual({});
     expect(query).not.toHaveBeenCalled();
+  });
+});
+
+// HealthSphere es una base externa de solo lectura (336k+241k filas) sin
+// índice en tipo/fechaFormulacion — el listado sin texto de búsqueda medía
+// ~3.2s porque el JOIN con paciente/atención corría ANTES de ordenar/paginar.
+// Sin búsqueda, el filtro completo vive en suhc_new_tbl_formulacion sola, así
+// que se resuelve ahí primero (filtra+ordena+pagina) y el JOIN corre solo
+// sobre esa página ya acotada, en vez de sobre todo el universo.
+describe('formulacion-hs.service listFormulacionesHS (optimización del listado sin búsqueda)', () => {
+  beforeEach(() => {
+    mockHsConnection.query.mockReset();
+  });
+
+  it('without a search term, resolves the page via a subquery on suhc_new_tbl_formulacion alone before joining paciente/atención', async () => {
+    mockHsConnection.query
+      .mockResolvedValueOnce([[{ id_formulacion: 1, idPaciente: 9, fechaFormulacion: '2026-01-01', total_medicamentos: 2 }]])
+      .mockResolvedValueOnce([[{ total: 1 }]]);
+
+    const result = await listFormulacionesHS({ page: 1, limit: 30 });
+
+    const [listSql, listParams] = mockHsConnection.query.mock.calls[0];
+    expect(listSql).toMatch(/FROM \(\s*SELECT f\.Id AS id_formulacion.*FROM suhc_new_tbl_formulacion f/s);
+    expect(listSql).toMatch(/\) f\s*INNER JOIN tblpaciente p ON p\.id = f\.idPaciente/);
+    expect(listParams).toEqual([30, 0]);
+
+    const [countSql, countParams] = mockHsConnection.query.mock.calls[1];
+    // El COUNT no debe tocar tblpaciente ni atención cuando no hay búsqueda —
+    // el filtro (tipo, fechas) vive solo en f.
+    expect(countSql).not.toMatch(/tblpaciente/);
+    expect(countSql).not.toMatch(/suhc_new_tbl_atencion/);
+    expect(countParams).toEqual([]);
+
+    expect(result.data).toEqual([{ id_formulacion: 1, idPaciente: 9, fechaFormulacion: '2026-01-01', total_medicamentos: 2 }]);
+    expect(result.total).toBe(1);
+  });
+
+  it('threads fechaDesde/fechaHasta into the inner subquery filter, not the outer join', async () => {
+    mockHsConnection.query
+      .mockResolvedValueOnce([[]])
+      .mockResolvedValueOnce([[{ total: 0 }]]);
+
+    await listFormulacionesHS({ page: 2, limit: 10, fechaDesde: '2026-01-01', fechaHasta: '2026-01-31' });
+
+    const [listSql, listParams] = mockHsConnection.query.mock.calls[0];
+    expect(listSql).toMatch(/f\.fechaFormulacion >= \?/);
+    expect(listSql).toMatch(/f\.fechaFormulacion <= \?/);
+    expect(listParams).toEqual(['2026-01-01', '2026-01-31', 10, 10]); // offset = (2-1)*10
+
+    const [, countParams] = mockHsConnection.query.mock.calls[1];
+    expect(countParams).toEqual(['2026-01-01', '2026-01-31']);
+  });
+
+  it('with a search term, keeps the join-first STRAIGHT_JOIN form instead (search spans paciente/atención, cannot be resolved from f alone)', async () => {
+    mockHsConnection.query
+      .mockResolvedValueOnce([[{ id_formulacion: 5, documento_paciente: '123' }]])
+      .mockResolvedValueOnce([[{ total: 1 }]]);
+
+    const result = await listFormulacionesHS({ search: '123', page: 1, limit: 30 });
+
+    const [listSql, listParams] = mockHsConnection.query.mock.calls[0];
+    expect(listSql).toMatch(/SELECT STRAIGHT_JOIN/);
+    expect(listSql).toMatch(/p\.documento LIKE \?/);
+    expect(listParams).toEqual(['%123%', '%123%', '%123%', '%123%', '%123%', 30, 0]);
+
+    const [countSql] = mockHsConnection.query.mock.calls[1];
+    expect(countSql).toMatch(/INNER JOIN tblpaciente p/);
+    expect(result.data).toEqual([{ id_formulacion: 5, documento_paciente: '123' }]);
   });
 });

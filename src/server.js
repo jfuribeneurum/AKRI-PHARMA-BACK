@@ -6,6 +6,18 @@ import { ensureRuntimeSchema } from './services/runtime-schema.service.js';
 import { initParametrosTable } from './services/parametros.service.js';
 import { logger } from './utils/logger.js';
 
+// Red de seguridad general: sin esto, cualquier promesa rechazada que se
+// escape de asyncHandler/withTransaction (o de un listener de evento sin
+// try/catch) tumba TODO el proceso — cada sesión de cada usuario cae de
+// golpe por un solo error no atrapado, en vez de solo fallar esa operación.
+// Se loguea con contexto completo y el proceso sigue vivo.
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason instanceof Error ? reason.message : reason }, 'unhandledRejection no atrapado');
+});
+process.on('uncaughtException', (error) => {
+  logger.error({ err: error.message, stack: error.stack }, 'uncaughtException no atrapado');
+});
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

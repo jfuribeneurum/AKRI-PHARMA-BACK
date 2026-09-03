@@ -56,43 +56,102 @@ export async function listFormulacionesHS({ search = '', page = 1, limit = 30, f
 
   const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
-  const rows = await hsQuery(
-    `SELECT
-        f.Id                                    AS id_formulacion,
-        f.idPaciente,
-        f.fechaFormulacion,
-        f.tipo,
-        f.subtipo,
-        a.consecutivo                           AS consecutivo_atencion,
-        TRIM(CONCAT(
-          COALESCE(p.primer_nombre, ''), ' ',
-          COALESCE(p.segundo_nombre, ''), ' ',
-          COALESCE(p.primer_apellido, ''), ' ',
-          COALESCE(p.segundo_apellido, '')
-        ))                                      AS nombre_paciente,
-        p.documento                             AS documento_paciente,
-        p.telefono                              AS telefono_paciente,
-        p.celular                               AS celular_paciente,
-        COUNT(fm.Id)                            AS total_medicamentos
-     FROM suhc_new_tbl_formulacion f
-     INNER JOIN tblpaciente p ON p.id = f.idPaciente
-     LEFT JOIN suhc_new_tbl_formulacion_medicamentos fm ON fm.idFormulacion = f.Id
-     LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion
-     ${whereClause}
-     GROUP BY f.Id
-     ORDER BY f.fechaFormulacion DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
-  );
+  // HealthSphere no tiene índice en tipo/fechaFormulacion (es una base
+  // externa de solo lectura para nosotros — no podemos crear índices ahí).
+  // Sin texto de búsqueda, el filtro completo (tipo + rango de fechas) vive
+  // en suhc_new_tbl_formulacion sola, así que se filtra/ordena/pagina AHÍ
+  // primero y el JOIN con paciente/atención (336k y 241k filas) se hace
+  // solo sobre la página ya resuelta (30 filas), en vez de sobre todo el
+  // universo antes de ordenar. Medido: ~3.2s → ~0.25s. Con texto de
+  // búsqueda no se puede evitar el JOIN antes de filtrar (busca por nombre/
+  // documento de paciente), así que ahí solo se fuerza el orden del JOIN
+  // con STRAIGHT_JOIN para que no arranque por tblpaciente completa.
+  // El listado y el conteo son lecturas independientes — corren en paralelo
+  // (2 conexiones del pool) en vez de una detrás de la otra.
+  let rows;
+  let countRow;
 
-  const [countRow] = await hsQuery(
-    `SELECT COUNT(DISTINCT f.Id) AS total
-       FROM suhc_new_tbl_formulacion f
-       INNER JOIN tblpaciente p ON p.id = f.idPaciente
-       LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion
-       ${whereClause}`,
-    params
-  );
+  if (hasSearch) {
+    const [rowsResult, countRows] = await Promise.all([
+      hsQuery(
+        `SELECT STRAIGHT_JOIN
+            f.Id                                    AS id_formulacion,
+            f.idPaciente,
+            f.fechaFormulacion,
+            f.tipo,
+            f.subtipo,
+            a.consecutivo                           AS consecutivo_atencion,
+            TRIM(CONCAT(
+              COALESCE(p.primer_nombre, ''), ' ',
+              COALESCE(p.segundo_nombre, ''), ' ',
+              COALESCE(p.primer_apellido, ''), ' ',
+              COALESCE(p.segundo_apellido, '')
+            ))                                      AS nombre_paciente,
+            p.documento                             AS documento_paciente,
+            p.telefono                              AS telefono_paciente,
+            p.celular                               AS celular_paciente,
+            COUNT(fm.Id)                            AS total_medicamentos
+         FROM suhc_new_tbl_formulacion f
+         INNER JOIN tblpaciente p ON p.id = f.idPaciente
+         LEFT JOIN suhc_new_tbl_formulacion_medicamentos fm ON fm.idFormulacion = f.Id
+         LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion
+         ${whereClause}
+         GROUP BY f.Id
+         ORDER BY f.fechaFormulacion DESC
+         LIMIT ? OFFSET ?`,
+        [...params, limit, offset]
+      ),
+      hsQuery(
+        `SELECT COUNT(DISTINCT f.Id) AS total
+           FROM suhc_new_tbl_formulacion f
+           INNER JOIN tblpaciente p ON p.id = f.idPaciente
+           LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion
+           ${whereClause}`,
+        params
+      )
+    ]);
+    rows = rowsResult;
+    [countRow] = countRows;
+  } else {
+    const [rowsResult, countRows] = await Promise.all([
+      hsQuery(
+        `SELECT
+            f.id_formulacion,
+            f.idPaciente,
+            f.fechaFormulacion,
+            f.tipo,
+            f.subtipo,
+            a.consecutivo                           AS consecutivo_atencion,
+            TRIM(CONCAT(
+              COALESCE(p.primer_nombre, ''), ' ',
+              COALESCE(p.segundo_nombre, ''), ' ',
+              COALESCE(p.primer_apellido, ''), ' ',
+              COALESCE(p.segundo_apellido, '')
+            ))                                      AS nombre_paciente,
+            p.documento                             AS documento_paciente,
+            p.telefono                              AS telefono_paciente,
+            p.celular                               AS celular_paciente,
+            (SELECT COUNT(*) FROM suhc_new_tbl_formulacion_medicamentos fm2
+              WHERE fm2.idFormulacion = f.id_formulacion) AS total_medicamentos
+         FROM (
+           SELECT f.Id AS id_formulacion, f.idPaciente, f.idAtencion, f.fechaFormulacion, f.tipo, f.subtipo
+             FROM suhc_new_tbl_formulacion f
+             ${whereClause}
+             ORDER BY f.fechaFormulacion DESC
+             LIMIT ? OFFSET ?
+         ) f
+         INNER JOIN tblpaciente p ON p.id = f.idPaciente
+         LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion`,
+        [...params, limit, offset]
+      ),
+      hsQuery(
+        `SELECT COUNT(*) AS total FROM suhc_new_tbl_formulacion f ${whereClause}`,
+        params
+      )
+    ]);
+    rows = rowsResult;
+    [countRow] = countRows;
+  }
 
   return {
     data: rows,
