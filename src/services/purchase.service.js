@@ -179,7 +179,7 @@ export async function getPurchaseOrder(idOc) {
   const items = await query(
     `SELECT ocd.id_oc_detalle, ocd.id_producto, ocd.cantidad, ocd.precio_unitario,
             ocd.precio_venta, ocd.costo_referencia,
-            prod.nombre_comercial, prod.concentracion,
+            prod.nombre_comercial, prod.concentracion, prod.principio_activo,
             COALESCE(prod.codigo_control, prod.sku) AS codigo,
             prod.id_laboratorio, lab.nombre AS laboratorio_nombre
        FROM ordenes_compra_detalle ocd

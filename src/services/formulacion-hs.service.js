@@ -441,6 +441,20 @@ export async function agregarMedicamentoExtra(idFormulacionHs, payload, userId, 
     throw new HttpError(404, 'El medicamento seleccionado no existe en el Maestro de productos.');
   }
 
+  // Sin esto, reintentar "Agregar medicamento" (ej. porque el stock tardó en
+  // cargar en la fila anterior y pareció que no había funcionado) crea una
+  // fila duplicada por cada intento — visto en producción: hasta 4 copias
+  // del mismo medicamento en una sola formulación.
+  const [yaAgregado] = await query(
+    `SELECT id FROM dispensacion_hs_medicamentos_extra
+      WHERE id_formulacion_hs = ? AND id_producto = ? AND activo = 1
+      LIMIT 1`,
+    [idFormulacionHs, id_producto]
+  );
+  if (yaAgregado) {
+    throw new HttpError(409, `${producto.nombre_comercial} ya fue agregado a esta formulación.`);
+  }
+
   const result = await query(
     `INSERT INTO dispensacion_hs_medicamentos_extra
        (id_formulacion_hs, id_producto, nombre_medicamento, presentacion, via_administracion, cantidad, diagnostico, observaciones, id_usuario_creador)

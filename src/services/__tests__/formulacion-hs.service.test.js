@@ -284,6 +284,7 @@ describe('agregarMedicamentoExtra / eliminarMedicamentoExtra', () => {
     mockHsConnection.query.mockResolvedValueOnce([[{ Id: 7 }]]); // assertFormulacionExiste
     query
       .mockResolvedValueOnce([{ nombre_comercial: 'IBUPROFENO 400 MG' }]) // SELECT productos
+      .mockResolvedValueOnce([]) // SELECT dispensacion_hs_medicamentos_extra (sin duplicado activo)
       .mockResolvedValueOnce({ insertId: 123 }) // INSERT
       .mockResolvedValueOnce({}); // recordProcessTrace
 
@@ -292,10 +293,22 @@ describe('agregarMedicamentoExtra / eliminarMedicamentoExtra', () => {
     }, 1);
 
     expect(result).toEqual({ id_med_formulacion: 900000123, esManual: true });
-    const [sql, params] = query.mock.calls[1];
+    const [sql, params] = query.mock.calls[2];
     expect(sql).toMatch(/INSERT INTO dispensacion_hs_medicamentos_extra/);
     expect(params).toEqual([7, 42, 'IBUPROFENO 400 MG', 'Tableta', 'Oral', 3, null, null, 1]);
-    expect(query.mock.calls[2][0]).toMatch(/INSERT INTO procesos_terminados_trazabilidad/);
+    expect(query.mock.calls[3][0]).toMatch(/INSERT INTO procesos_terminados_trazabilidad/);
+  });
+
+  it('rejects with 409 instead of inserting a duplicate when the same producto is already active in this formulación (reintentos por el bug de stock que no cargaba de una)', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[{ Id: 7 }]]); // assertFormulacionExiste
+    query
+      .mockResolvedValueOnce([{ nombre_comercial: 'GLIFORMIN' }]) // SELECT productos
+      .mockResolvedValueOnce([{ id: 41 }]); // ya existe un extra activo con este id_producto
+
+    await expect(agregarMedicamentoExtra(7, { id_producto: 451, cantidad: 30 }, 1))
+      .rejects.toMatchObject({ status: 409, message: expect.stringContaining('GLIFORMIN') });
+
+    expect(query.mock.calls.some(([sql]) => sql.includes('INSERT INTO dispensacion_hs_medicamentos_extra'))).toBe(false);
   });
 
   it('eliminarMedicamentoExtra soft-deletes (activo = 0) an existing manual medicamento and traces it', async () => {
