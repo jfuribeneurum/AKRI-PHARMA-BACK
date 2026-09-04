@@ -18,7 +18,7 @@ function calculateTotals(items) {
 async function getActiveSite(idSede) {
   if (!idSede) return null;
   const rows = await query(
-    `SELECT id_sede, codigo, nombre, es_principal, activo
+    `SELECT id_sede, codigo, nombre, ciudad, es_principal, activo
        FROM sedes
       WHERE id_sede = ?
       LIMIT 1`,
@@ -27,24 +27,52 @@ async function getActiveSite(idSede) {
   return rows[0] ?? null;
 }
 
-async function assertCentralPurchasing(user) {
+function normalizeCiudad(ciudad) {
+  return (ciudad ?? '').trim().toUpperCase();
+}
+
+// Las órdenes de compra se gestionan por "grupo de sede" (todas las sedes
+// activas de la misma ciudad), no por una única sede central: una persona de
+// Hemofilia puede gestionar también las órdenes de Diabetes porque ambas son
+// sedes de Medellín, pero no las de Cali o Pereira. Se agrupa por ciudad en
+// vez de por un id fijo para que una sede nueva en la misma ciudad quede
+// incluida automáticamente.
+async function getSedeGroupIds(ciudad) {
+  const rows = await query(
+    `SELECT id_sede FROM sedes WHERE UPPER(TRIM(ciudad)) = ? AND activo = TRUE`,
+    [normalizeCiudad(ciudad)]
+  );
+  return rows.map(r => Number(r.id_sede));
+}
+
+async function assertSedeActivaValida(user) {
   const site = await getActiveSite(user?.id_sede);
   if (!site || !site.activo) {
     throw new HttpError(400, 'La sesión no tiene una sede activa válida');
   }
-  if (!site.es_principal) {
-    throw new HttpError(403, 'Las órdenes de compra solo se gestionan desde la sede central');
-  }
   return site;
 }
 
+// Guardia para acciones administrativas sobre una orden ya existente
+// (editar/aprobar/cancelar): exige que la sede activa del usuario esté en el
+// mismo grupo de ciudad que la sede dueña de la orden.
+async function assertGestionaOrden(user, idSedeOrden) {
+  const userSite = await assertSedeActivaValida(user);
+  const groupIds = await getSedeGroupIds(userSite.ciudad);
+  if (!groupIds.includes(Number(idSedeOrden))) {
+    throw new HttpError(403, 'No tienes autorización para gestionar órdenes de compra de esa sede');
+  }
+  return userSite;
+}
+
 export async function listPurchases(user = null) {
-  const site = user?.id_sede ? await getActiveSite(user.id_sede) : null;
+  const userSite = user?.id_sede ? await getActiveSite(user.id_sede) : null;
+  const groupIds = userSite ? await getSedeGroupIds(userSite.ciudad) : [];
   const params = [];
   let siteFilter = '';
-  if (site && !site.es_principal) {
-    siteFilter = 'WHERE oc.id_sede = ?';
-    params.push(site.id_sede);
+  if (groupIds.length) {
+    siteFilter = `WHERE oc.id_sede IN (${groupIds.map(() => '?').join(',')})`;
+    params.push(...groupIds);
   }
 
   return query(
@@ -75,17 +103,31 @@ async function nextNumeroOC(connection) {
   return buildNextFromRow(rows[0]);
 }
 
-export async function listWarehousesForPO(idSede = null) {
+// Acepta un solo id_sede (compat), un arreglo de ids (grupo de sede por
+// ciudad) o null (todas). El picker de "Bodega de destino" al crear una OC
+// solo debe ofrecer sedes que esa sesión realmente puede gestionar — ver
+// getSedeGroupIdsForUser.
+export async function listWarehousesForPO(idSedeOrIds = null) {
+  const ids = idSedeOrIds == null ? null : (Array.isArray(idSedeOrIds) ? idSedeOrIds : [idSedeOrIds]);
+  if (ids && !ids.length) return [];
+
   return query(
     `SELECT a.id_almacen, a.codigo, a.nombre, a.tipo,
             s.id_sede, s.nombre AS sede_nombre, s.ciudad AS sede_ciudad, s.direccion AS sede_direccion
        FROM almacenes a
        INNER JOIN sedes s ON s.id_sede = a.id_sede
       WHERE a.activo = TRUE AND s.activo = TRUE
-        AND (? IS NULL OR s.id_sede = ?)
+        ${ids ? `AND s.id_sede IN (${ids.map(() => '?').join(',')})` : ''}
       ORDER BY s.es_principal DESC, s.nombre ASC, a.es_principal DESC, a.nombre ASC`,
-    [idSede, idSede]
+    ids ?? []
   );
+}
+
+// Sedes que la sesión activa puede gestionar (mismo grupo de ciudad) — usado
+// para acotar el picker de "Bodega de destino" al crear una orden de compra.
+export async function getSedeGroupIdsForUser(user) {
+  const site = await assertSedeActivaValida(user);
+  return getSedeGroupIds(site.ciudad);
 }
 
 export async function previewNextNumeroOC() {
@@ -99,7 +141,7 @@ export async function previewNextNumeroOC() {
 }
 
 export async function createPurchaseOrder(payload, user) {
-  const site = await assertCentralPurchasing(user);
+  const site = await assertSedeActivaValida(user);
   return withTransaction(async (connection) => {
     const numero_oc = await nextNumeroOC(connection);
     const totals = calculateTotals(payload.items);
@@ -147,7 +189,7 @@ export async function createPurchaseOrder(payload, user) {
       perfil_nombre: user?.role ?? null,
       referencia_tipo: 'ORDEN_COMPRA',
       referencia_id: headerResult.insertId,
-      descripcion: `OC ${numero_oc} creada desde sede central`,
+      descripcion: `OC ${numero_oc} creada desde ${site.nombre}`,
       payload_json: { items: payload.items.length, total: totals.total }
     });
 
@@ -202,7 +244,6 @@ export async function getPurchaseOrder(idOc) {
 }
 
 export async function updatePurchaseOrder(idOc, payload, user) {
-  await assertCentralPurchasing(user);
   return withTransaction(async (connection) => {
     const [ocRows] = await connection.execute(
       `SELECT * FROM ordenes_compra WHERE id_oc = ? FOR UPDATE`,
@@ -210,6 +251,7 @@ export async function updatePurchaseOrder(idOc, payload, user) {
     );
     const oc = ocRows[0];
     if (!oc) throw new HttpError(404, 'Orden no encontrada');
+    await assertGestionaOrden(user, oc.id_sede);
     if (!['borrador', 'enviada', 'editada'].includes(oc.estado)) {
       throw new HttpError(400, `No se puede editar una orden en estado "${oc.estado}"`);
     }
@@ -250,12 +292,12 @@ export async function updatePurchaseOrder(idOc, payload, user) {
 }
 
 export async function approvePurchaseOrder(idOc, user) {
-  const site = await assertCentralPurchasing(user);
   const rows = await query(
-    `SELECT id_oc, numero_oc, estado FROM ordenes_compra WHERE id_oc = ?`, [idOc]
+    `SELECT id_oc, numero_oc, estado, id_sede FROM ordenes_compra WHERE id_oc = ?`, [idOc]
   );
   const oc = rows[0];
   if (!oc) throw new HttpError(404, 'Orden no encontrada');
+  await assertGestionaOrden(user, oc.id_sede);
   if (!['borrador', 'enviada', 'editada'].includes(oc.estado)) {
     throw new HttpError(400, `No se puede aprobar una orden en estado "${oc.estado}"`);
   }
@@ -268,7 +310,7 @@ export async function approvePurchaseOrder(idOc, user) {
   );
   await recordProcessTrace(null, {
     proceso: 'COMPRAS', subproceso: 'ORDEN_COMPRA_APROBACION',
-    id_sede: site.id_sede, id_usuario: user?.sub ?? null, perfil_nombre: user?.role ?? null,
+    id_sede: oc.id_sede, id_usuario: user?.sub ?? null, perfil_nombre: user?.role ?? null,
     referencia_tipo: 'ORDEN_COMPRA', referencia_id: idOc,
     descripcion: `OC ${oc.numero_oc} aprobada`
   });
@@ -276,27 +318,32 @@ export async function approvePurchaseOrder(idOc, user) {
 }
 
 export async function cancelPurchaseOrder(idOc, user) {
-  const site = await assertCentralPurchasing(user);
   const rows = await query(
-    `SELECT id_oc, numero_oc, estado FROM ordenes_compra WHERE id_oc = ?`, [idOc]
+    `SELECT id_oc, numero_oc, estado, id_sede FROM ordenes_compra WHERE id_oc = ?`, [idOc]
   );
   const oc = rows[0];
   if (!oc) throw new HttpError(404, 'Orden no encontrada');
+  await assertGestionaOrden(user, oc.id_sede);
   if (!['borrador', 'enviada', 'editada'].includes(oc.estado)) {
     throw new HttpError(400, `No se puede cancelar una orden en estado "${oc.estado}"`);
   }
   await query(`UPDATE ordenes_compra SET estado = 'cancelada' WHERE id_oc = ?`, [idOc]);
   await recordProcessTrace(null, {
     proceso: 'COMPRAS', subproceso: 'ORDEN_COMPRA_CANCELACION',
-    id_sede: site.id_sede, id_usuario: user?.sub ?? null, perfil_nombre: user?.role ?? null,
+    id_sede: oc.id_sede, id_usuario: user?.sub ?? null, perfil_nombre: user?.role ?? null,
     referencia_tipo: 'ORDEN_COMPRA', referencia_id: idOc,
     descripcion: `OC ${oc.numero_oc} cancelada`
   });
   return { id_oc: idOc, numero_oc: oc.numero_oc, estado: 'cancelada' };
 }
 
+// recibirPurchaseOrder queda aparte: recibir mercancía mueve inventario real
+// a un almacén físico concreto, así que exige la sede activa EXACTA de la
+// orden (no basta con el grupo de ciudad) — si alguien de Hemofilia necesita
+// recibir una orden de Diabetes, primero debe cambiar su sede activa a
+// Diabetes (switchSede), igual que para descontar cualquier otro inventario.
 export async function receivePurchaseOrder(idOc, payload, user) {
-  const site = await assertCentralPurchasing(user);
+  const site = await assertSedeActivaValida(user);
   return withTransaction(async (connection) => {
     const [ocRows] = await connection.execute(
       `SELECT * FROM ordenes_compra WHERE id_oc = ? FOR UPDATE`,

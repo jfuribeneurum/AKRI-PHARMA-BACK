@@ -115,7 +115,20 @@ async function getBaseUserById(idUsuario) {
   return rows[0] ?? null;
 }
 
-async function getUserAccess(idUsuario) {
+async function getUserAccess(idUsuario, role = null) {
+  if (role === 'ADMINISTRADOR') {
+    return query(
+      `SELECT s.id_sede,
+              (s.id_sede = u.id_sede) AS es_predeterminada,
+              TRUE AS puede_admin_sede,
+              s.codigo, s.nombre, s.es_principal, s.activo
+         FROM sedes s
+         CROSS JOIN (SELECT id_sede FROM usuarios WHERE id_usuario = ?) u
+        WHERE s.activo = TRUE
+        ORDER BY es_predeterminada DESC, s.es_principal DESC, s.nombre ASC`,
+      [idUsuario]
+    );
+  }
   return query(
     `SELECT us.id_sede, us.es_predeterminada, us.puede_admin_sede, s.codigo, s.nombre, s.es_principal, s.activo
      FROM usuarios_sedes us
@@ -300,7 +313,7 @@ function issueToken({ user, usabilities, siteSummary }) {
 }
 
 async function buildAuthResponse(user, requestedSiteId = null) {
-  const access = await getUserAccess(user.id_usuario);
+  const access = await getUserAccess(user.id_usuario, user.role);
   if (!access.length) {
     throw new HttpError(403, 'El usuario no tiene sedes autorizadas');
   }

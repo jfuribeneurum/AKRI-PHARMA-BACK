@@ -12,7 +12,8 @@ import {
   cancelPurchaseOrder,
   receivePurchaseOrder,
   previewNextNumeroOC,
-  listWarehousesForPO
+  listWarehousesForPO,
+  getSedeGroupIdsForUser
 } from '../services/purchase.service.js';
 
 const purchaseItemSchema = z.object({
@@ -72,11 +73,12 @@ purchasesRouter.get(
 purchasesRouter.get(
   '/warehouses',
   authRequired,
-  asyncHandler(async (_req, res) => {
-    // Las órdenes de compra se crean desde la sede central hacia cualquier
-    // sede destino — este picker debe listar las 4 sedes siempre, no solo la
-    // del usuario que está creando la orden.
-    const data = await listWarehousesForPO(null);
+  asyncHandler(async (req, res) => {
+    // Solo se ofrecen como destino las sedes que esta sesión puede
+    // gestionar (su grupo de ciudad) — alguien activo en Hemofilia ve
+    // Diabetes y Hemofilia, pero no Cali ni Pereira.
+    const groupIds = await getSedeGroupIdsForUser(req.user);
+    const data = await listWarehousesForPO(groupIds);
     res.json({ success: true, data });
   })
 );

@@ -20,7 +20,7 @@ const { query, withTransaction } = await import('../../config/db.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
 const {
   listWarehousesForPO, receivePurchaseOrder, getPurchaseOrder, approvePurchaseOrder, cancelPurchaseOrder,
-  createPurchaseOrder, updatePurchaseOrder, listPurchases
+  createPurchaseOrder, updatePurchaseOrder, listPurchases, getSedeGroupIdsForUser
 } = await import('../purchase.service.js');
 
 function mockConnection(routes) {
@@ -42,17 +42,65 @@ describe('purchase.service listWarehousesForPO', () => {
     query.mockResolvedValue([]);
   });
 
-  it('scopes to the given id_sede', async () => {
+  it('scopes to a single given id_sede', async () => {
     await listWarehousesForPO(5);
     const [sql, params] = query.mock.calls[0];
-    expect(sql).toMatch(/s\.id_sede = \?/);
-    expect(params).toEqual([5, 5]);
+    expect(sql).toMatch(/s\.id_sede IN \(\?\)/);
+    expect(params).toEqual([5]);
+  });
+
+  it('scopes to a group of sede ids (same-city group)', async () => {
+    await listWarehousesForPO([1, 3]);
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/s\.id_sede IN \(\?,\?\)/);
+    expect(params).toEqual([1, 3]);
   });
 
   it('is unscoped when no id_sede is given', async () => {
     await listWarehousesForPO();
-    const [, params] = query.mock.calls[0];
-    expect(params).toEqual([null, null]);
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).not.toMatch(/s\.id_sede IN/);
+    expect(params).toEqual([]);
+  });
+
+  it('short-circuits to an empty list without querying when given an empty group', async () => {
+    const result = await listWarehousesForPO([]);
+    expect(result).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
+});
+
+// El picker de "Bodega de destino" al crear una OC usa esto para no ofrecer
+// sedes que la sesión activa no puede gestionar (ver assertGestionaOrden).
+describe('purchase.service getSedeGroupIdsForUser', () => {
+  beforeEach(() => {
+    query.mockReset();
+  });
+
+  it('returns both Medellín sedes for a user active in Hemofilia', async () => {
+    query
+      .mockResolvedValueOnce([{ id_sede: 3, ciudad: 'MEDELLIN', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1 }, { id_sede: 3 }]);
+
+    const ids = await getSedeGroupIdsForUser({ id_sede: 3 });
+
+    expect(ids).toEqual([1, 3]);
+  });
+
+  it('returns only Cali for a user active in Cali', async () => {
+    query
+      .mockResolvedValueOnce([{ id_sede: 2, ciudad: 'Cali', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 2 }]);
+
+    const ids = await getSedeGroupIdsForUser({ id_sede: 2 });
+
+    expect(ids).toEqual([2]);
+  });
+
+  it('rejects when the session has no valid active sede', async () => {
+    query.mockResolvedValueOnce([]);
+
+    await expect(getSedeGroupIdsForUser({ id_sede: 99 })).rejects.toMatchObject({ status: 400 });
   });
 });
 
@@ -297,6 +345,11 @@ describe('purchase.service getPurchaseOrder', () => {
 // approvePurchaseOrder marcaba estado='aprobada' pero nunca llenaba
 // aprobado_por/fecha_aprobacion pese a que la tabla los tiene — sin esto
 // el documento de la orden nunca puede mostrar quién la aprobó.
+//
+// La regla de "solo la sede central gestiona compras" se reemplazó por
+// grupos de sede por ciudad (assertGestionaOrden): la orden se fetch primero
+// (query #1), luego se resuelve la sede activa del usuario (query #2) y el
+// grupo de ciudad de esa sede (query #3), antes de tocar el estado.
 describe('purchase.service approvePurchaseOrder', () => {
   beforeEach(() => {
     query.mockReset();
@@ -305,8 +358,9 @@ describe('purchase.service approvePurchaseOrder', () => {
 
   it('records who approved the order', async () => {
     query
-      .mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }])
-      .mockResolvedValueOnce([{ id_oc: 10, numero_oc: 'OC-0000010', estado: 'enviada' }])
+      .mockResolvedValueOnce([{ id_oc: 10, numero_oc: 'OC-0000010', estado: 'enviada', id_sede: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1, ciudad: 'MEDELLIN', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1 }, { id_sede: 3 }])
       .mockResolvedValueOnce([]);
 
     await approvePurchaseOrder(10, { id_sede: 1, sub: 42 });
@@ -318,8 +372,9 @@ describe('purchase.service approvePurchaseOrder', () => {
 
   it('leaves an audit trace of the approval', async () => {
     query
-      .mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }])
-      .mockResolvedValueOnce([{ id_oc: 10, numero_oc: 'OC-0000010', estado: 'enviada' }])
+      .mockResolvedValueOnce([{ id_oc: 10, numero_oc: 'OC-0000010', estado: 'enviada', id_sede: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1, ciudad: 'MEDELLIN', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1 }, { id_sede: 3 }])
       .mockResolvedValueOnce([]);
 
     await approvePurchaseOrder(10, { id_sede: 1, sub: 42 });
@@ -333,9 +388,7 @@ describe('purchase.service approvePurchaseOrder', () => {
   });
 
   it('rejects with 404 when the order does not exist', async () => {
-    query
-      .mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }])
-      .mockResolvedValueOnce([]);
+    query.mockResolvedValueOnce([]);
 
     await expect(approvePurchaseOrder(999, { id_sede: 1, sub: 42 })).rejects.toMatchObject({ status: 404 });
   });
@@ -344,17 +397,37 @@ describe('purchase.service approvePurchaseOrder', () => {
     for (const estado of ['aprobada', 'cancelada', 'recibida_total']) {
       query.mockReset();
       query
-        .mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }])
-        .mockResolvedValueOnce([{ id_oc: 10, numero_oc: 'OC-0000010', estado }]);
+        .mockResolvedValueOnce([{ id_oc: 10, numero_oc: 'OC-0000010', estado, id_sede: 1 }])
+        .mockResolvedValueOnce([{ id_sede: 1, ciudad: 'MEDELLIN', activo: 1 }])
+        .mockResolvedValueOnce([{ id_sede: 1 }]);
 
       await expect(approvePurchaseOrder(10, { id_sede: 1, sub: 42 })).rejects.toMatchObject({ status: 400 });
     }
   });
 
-  it('rejects when the approving user is not on the central sede', async () => {
-    query.mockResolvedValueOnce([{ id_sede: 2, es_principal: 0, activo: 1 }]);
+  // El caso "sede central" ya no existe: ahora cada grupo de ciudad gestiona
+  // sus propias órdenes — un usuario activo en Cali no puede aprobar una
+  // orden que pertenece a una sede de Medellín.
+  it('rejects when the approving user is on a different sede group (city) than the order', async () => {
+    query
+      .mockResolvedValueOnce([{ id_oc: 10, numero_oc: 'OC-0000010', estado: 'enviada', id_sede: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 2, ciudad: 'Cali', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 2 }]);
 
     await expect(approvePurchaseOrder(10, { id_sede: 2, sub: 42 })).rejects.toMatchObject({ status: 403 });
+  });
+
+  // El caso que motivó el cambio: alguien activo en Hemofilia (sede 3) debe
+  // poder aprobar una orden que pertenece a Diabetes (sede 1) — ambas son
+  // sedes de Medellín.
+  it('allows a user active in Hemofilia to approve an order that belongs to Diabetes — same city group', async () => {
+    query
+      .mockResolvedValueOnce([{ id_oc: 10, numero_oc: 'OC-0000010', estado: 'enviada', id_sede: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 3, ciudad: 'MEDELLIN', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1 }, { id_sede: 3 }])
+      .mockResolvedValueOnce([]);
+
+    await expect(approvePurchaseOrder(10, { id_sede: 3, sub: 42 })).resolves.toMatchObject({ estado: 'aprobada' });
   });
 });
 
@@ -368,8 +441,9 @@ describe('purchase.service cancelPurchaseOrder', () => {
 
   it('leaves an audit trace of the cancellation', async () => {
     query
-      .mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }])
-      .mockResolvedValueOnce([{ id_oc: 11, numero_oc: 'OC-0000011', estado: 'enviada' }])
+      .mockResolvedValueOnce([{ id_oc: 11, numero_oc: 'OC-0000011', estado: 'enviada', id_sede: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1, ciudad: 'MEDELLIN', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1 }, { id_sede: 3 }])
       .mockResolvedValueOnce([]);
 
     await cancelPurchaseOrder(11, { id_sede: 1, sub: 7 });
@@ -383,9 +457,7 @@ describe('purchase.service cancelPurchaseOrder', () => {
   });
 
   it('rejects with 404 when the order does not exist', async () => {
-    query
-      .mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }])
-      .mockResolvedValueOnce([]);
+    query.mockResolvedValueOnce([]);
 
     await expect(cancelPurchaseOrder(999, { id_sede: 1, sub: 7 })).rejects.toMatchObject({ status: 404 });
   });
@@ -394,18 +466,33 @@ describe('purchase.service cancelPurchaseOrder', () => {
     for (const estado of ['aprobada', 'cancelada', 'recibida_total']) {
       query.mockReset();
       query
-        .mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }])
-        .mockResolvedValueOnce([{ id_oc: 11, numero_oc: 'OC-0000011', estado }]);
+        .mockResolvedValueOnce([{ id_oc: 11, numero_oc: 'OC-0000011', estado, id_sede: 1 }])
+        .mockResolvedValueOnce([{ id_sede: 1, ciudad: 'MEDELLIN', activo: 1 }])
+        .mockResolvedValueOnce([{ id_sede: 1 }]);
 
       await expect(cancelPurchaseOrder(11, { id_sede: 1, sub: 7 })).rejects.toMatchObject({ status: 400 });
     }
   });
+
+  it('rejects when the cancelling user is on a different sede group (city) than the order', async () => {
+    query
+      .mockResolvedValueOnce([{ id_oc: 11, numero_oc: 'OC-0000011', estado: 'enviada', id_sede: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 4, ciudad: 'Pereira', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 4 }]);
+
+    await expect(cancelPurchaseOrder(11, { id_sede: 4, sub: 7 })).rejects.toMatchObject({ status: 403 });
+  });
 });
 
-// createPurchaseOrder no tenía ninguna prueba: ni el guard de sede central,
-// ni la numeración consecutiva, ni el cálculo de totales, ni — crítico — que
-// la respuesta devuelva el numero_oc real y no el que venga (vacío) en el
-// payload del formulario, que lo deja readonly hasta que el backend responde.
+// createPurchaseOrder no tenía ninguna prueba: ni la numeración consecutiva,
+// ni el cálculo de totales, ni — crítico — que la respuesta devuelva el
+// numero_oc real y no el que venga (vacío) en el payload del formulario, que
+// lo deja readonly hasta que el backend responde.
+//
+// Ya no existe una única "sede central" que gestione todas las compras:
+// cualquier sede activa válida puede crear su propia orden (assertGestiona-
+// Orden/assertSedeActivaValida) — la orden queda con el id_sede de quien la
+// crea, no fijo a una sede.
 describe('purchase.service createPurchaseOrder', () => {
   beforeEach(() => {
     query.mockReset();
@@ -413,12 +500,27 @@ describe('purchase.service createPurchaseOrder', () => {
     recordProcessTrace.mockReset();
   });
 
-  it('rejects when the creating user is not on the central sede', async () => {
-    query.mockResolvedValueOnce([{ id_sede: 2, es_principal: 0, activo: 1 }]);
+  it('creates the order under the creating user\'s own active sede — not restricted to a single central sede', async () => {
+    query.mockResolvedValueOnce([{ id_sede: 2, codigo: '03', nombre: 'SEDE CALI', ciudad: 'Cali', es_principal: 0, activo: 1 }]);
 
-    await expect(
-      createPurchaseOrder({ id_proveedor: 1, items: [{ id_producto: 1, cantidad: 1, precio_unitario: 100 }] }, { id_sede: 2, sub: 1 })
-    ).rejects.toMatchObject({ status: 403 });
+    let connection;
+    withTransaction.mockImplementation(async (cb) => {
+      connection = mockConnection([
+        ['SELECT numero_oc FROM ordenes_compra', [[]]],
+        ['INSERT INTO ordenes_compra (', [{ insertId: 60 }]],
+        ['INSERT INTO ordenes_compra_detalle', [{ insertId: 1 }]]
+      ]);
+      return cb(connection);
+    });
+
+    const result = await createPurchaseOrder(
+      { id_proveedor: 1, items: [{ id_producto: 1, cantidad: 1, precio_unitario: 100 }] },
+      { id_sede: 2, sub: 1 }
+    );
+
+    expect(result).toMatchObject({ id_sede: 2, sede: 'SEDE CALI' });
+    const headerCall = connection.execute.mock.calls.find(([sql]) => sql.includes('INSERT INTO ordenes_compra ('));
+    expect(headerCall[1][0]).toBe(2);
   });
 
   it('rejects when the user has no valid active sede at all', async () => {
@@ -493,6 +595,11 @@ describe('purchase.service createPurchaseOrder', () => {
 
 // updatePurchaseOrder tampoco tenía pruebas: el guard de estado editable, el
 // reemplazo completo de items y el recálculo de totales.
+//
+// El guard de sede (assertGestionaOrden) corre DENTRO de la transacción,
+// después de leer la orden vía connection.execute — así que query() (no
+// connection.execute) recibe la sede activa del usuario y luego el grupo de
+// ciudad de esa sede, en ese orden.
 describe('purchase.service updatePurchaseOrder', () => {
   beforeEach(() => {
     query.mockReset();
@@ -501,7 +608,6 @@ describe('purchase.service updatePurchaseOrder', () => {
   });
 
   it('rejects with 404 when the order does not exist', async () => {
-    query.mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }]);
     withTransaction.mockImplementation(async (cb) => {
       const connection = mockConnection([
         ['FROM ordenes_compra WHERE id_oc', [[]]]
@@ -514,10 +620,28 @@ describe('purchase.service updatePurchaseOrder', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
+  it('rejects when the editing user is on a different sede group (city) than the order', async () => {
+    query
+      .mockResolvedValueOnce([{ id_sede: 2, ciudad: 'Cali', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 2 }]);
+    withTransaction.mockImplementation(async (cb) => {
+      const connection = mockConnection([
+        ['FROM ordenes_compra WHERE id_oc', [[{ id_oc: 10, id_sede: 1, numero_oc: 'OC-0000010', estado: 'enviada' }]]]
+      ]);
+      return cb(connection);
+    });
+
+    await expect(
+      updatePurchaseOrder(10, { id_proveedor: 1, items: [] }, { id_sede: 2, sub: 1 })
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
   it('rejects editing an order that is already aprobada/cancelada/recibida_total', async () => {
     for (const estado of ['aprobada', 'cancelada', 'recibida_total']) {
       query.mockReset();
-      query.mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }]);
+      query
+        .mockResolvedValueOnce([{ id_sede: 1, ciudad: 'MEDELLIN', activo: 1 }])
+        .mockResolvedValueOnce([{ id_sede: 1 }]);
       withTransaction.mockImplementation(async (cb) => {
         const connection = mockConnection([
           ['FROM ordenes_compra WHERE id_oc', [[{ id_oc: 10, id_sede: 1, numero_oc: 'OC-0000010', estado }]]]
@@ -532,7 +656,9 @@ describe('purchase.service updatePurchaseOrder', () => {
   });
 
   it('replaces every item (delete + re-insert), recalculates totals, sets estado editada, and traces it', async () => {
-    query.mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }]);
+    query
+      .mockResolvedValueOnce([{ id_sede: 1, ciudad: 'MEDELLIN', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1 }]);
 
     let connection;
     withTransaction.mockImplementation(async (cb) => {
@@ -566,32 +692,39 @@ describe('purchase.service updatePurchaseOrder', () => {
   });
 });
 
-// listPurchases debe filtrar por sede a las sedes no centrales (una sede
-// normal solo debe ver sus propias órdenes), y no filtrar en absoluto para
-// la sede central (que gestiona todas).
+// listPurchases ya no distingue una única sede central que ve todo: cada
+// usuario ve las órdenes de su grupo de sede (mismas ciudad) — Cali solo ve
+// las suyas, pero alguien activo en cualquiera de las dos sedes de Medellín
+// ve las órdenes de ambas.
 describe('purchase.service listPurchases', () => {
   beforeEach(() => {
     query.mockReset();
   });
 
-  it('scopes to oc.id_sede for a non-central sede', async () => {
-    query.mockResolvedValueOnce([{ id_sede: 2, es_principal: 0, activo: 1 }]).mockResolvedValueOnce([]);
+  it('scopes to the sedes of the same city as a single-sede city (Cali)', async () => {
+    query
+      .mockResolvedValueOnce([{ id_sede: 2, ciudad: 'Cali', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 2 }])
+      .mockResolvedValueOnce([]);
 
     await listPurchases({ id_sede: 2 });
 
-    const [sql, params] = query.mock.calls[1];
-    expect(sql).toMatch(/WHERE oc\.id_sede = \?/);
+    const [sql, params] = query.mock.calls[2];
+    expect(sql).toMatch(/WHERE oc\.id_sede IN \(\?\)/);
     expect(params).toEqual([2]);
   });
 
-  it('does not scope the listing for the central sede', async () => {
-    query.mockResolvedValueOnce([{ id_sede: 1, es_principal: 1, activo: 1 }]).mockResolvedValueOnce([]);
+  it('includes both Medellín sedes (Diabetes and Hemofilia) for a user active in either one', async () => {
+    query
+      .mockResolvedValueOnce([{ id_sede: 3, ciudad: 'MEDELLIN', activo: 1 }])
+      .mockResolvedValueOnce([{ id_sede: 1 }, { id_sede: 3 }])
+      .mockResolvedValueOnce([]);
 
-    await listPurchases({ id_sede: 1 });
+    await listPurchases({ id_sede: 3 });
 
-    const [sql, params] = query.mock.calls[1];
-    expect(sql).not.toMatch(/WHERE oc\.id_sede = \?/);
-    expect(params).toEqual([]);
+    const [sql, params] = query.mock.calls[2];
+    expect(sql).toMatch(/WHERE oc\.id_sede IN \(\?,\?\)/);
+    expect(params).toEqual([1, 3]);
   });
 
   it('does not scope the listing when called without a user', async () => {
