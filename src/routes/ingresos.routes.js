@@ -5,6 +5,7 @@ import { authRequired } from '../middleware/auth.js';
 import { z } from 'zod';
 import { pool } from '../config/db.js';
 import { recordProcessTrace } from '../services/traceability.service.js';
+import { getSedeGroupIdsForUser } from '../services/purchase.service.js';
 
 const router = Router();
 router.use(authRequired);
@@ -405,6 +406,17 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
       items = [],
       es_devolucion = false,
     } = req.body;
+
+    if (id_almacen) {
+      const groupIds = await getSedeGroupIdsForUser(req.user);
+      const [[almacenSede]] = await connection.query(
+        `SELECT id_sede FROM almacenes WHERE id_almacen = ? AND activo = TRUE LIMIT 1`,
+        [id_almacen]
+      );
+      if (!almacenSede || !groupIds.includes(Number(almacenSede.id_sede))) {
+        return res.status(403).json({ success: false, message: 'No tienes autorización para registrar ingresos en esa bodega' });
+      }
+    }
 
     const productoTexto = buildProductoTexto(req.body);
     const idAlmacenActivo = id_almacen ?? req.user?.id_almacen ?? null;
