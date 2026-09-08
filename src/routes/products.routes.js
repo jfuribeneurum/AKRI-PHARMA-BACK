@@ -15,8 +15,7 @@ import {
   listProductImages,
   saveProductImage,
   listLaboratorios,
-  getNextControlCode,
-  checkPresentacionDuplicate
+  getNextControlCode
 } from '../services/product.service.js';
 
 const productSchema = z.object({
@@ -92,10 +91,13 @@ productsRouter.get(
   asyncHandler(async (req, res) => {
     const sku = String(req.query.sku ?? '').trim();
     const idLaboratorio = req.query.id_laboratorio ? Number(req.query.id_laboratorio) : null;
+    const cum = req.query.cum != null && req.query.cum !== ''
+      ? Number(req.query.cum)
+      : null;
     const consecutivoCum = req.query.consecutivo_cum != null && req.query.consecutivo_cum !== ''
       ? Number(req.query.consecutivo_cum)
       : null;
-    const data = await getNextControlCode(sku, idLaboratorio, consecutivoCum);
+    const data = await getNextControlCode(sku, idLaboratorio, cum, consecutivoCum);
     res.json({ success: true, data });
   })
 );
@@ -127,20 +129,6 @@ productsRouter.get(
   asyncHandler(async (req, res) => {
     const data = await listProductsByLaboratorio(Number(req.params.id));
     res.json({ success: true, data });
-  })
-);
-
-productsRouter.get(
-  '/check-presentacion',
-  authRequired,
-  asyncHandler(async (req, res) => {
-    const presentacion = req.query.presentacion != null && req.query.presentacion !== ''
-      ? Number(req.query.presentacion)
-      : null;
-    const idLaboratorio = req.query.id_laboratorio ? Number(req.query.id_laboratorio) : null;
-    const excludeId = req.query.exclude_id ? Number(req.query.exclude_id) : null;
-    const codigoControl = await checkPresentacionDuplicate(presentacion, idLaboratorio, excludeId);
-    res.json({ success: true, data: { codigo_control: codigoControl } });
   })
 );
 

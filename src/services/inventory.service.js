@@ -119,7 +119,7 @@ async function getLocationById(connection, idUbicacion) {
   return rows[0] ?? null;
 }
 
-export async function listStock(search = '', idAlmacen = null) {
+export async function listStock(search = '', idAlmacen = null, tipoProducto = null) {
   const wildcard = `%${search}%`;
 
   return query(
@@ -128,6 +128,7 @@ export async function listStock(search = '', idAlmacen = null) {
         p.sku,
         p.codigo_barras,
         p.nombre_comercial,
+        p.tipo_producto,
         l.id_lote,
         l.numero_lote,
         l.fecha_vencimiento,
@@ -150,8 +151,9 @@ export async function listStock(search = '', idAlmacen = null) {
      INNER JOIN ubicaciones_almacen u ON u.id_ubicacion = e.id_ubicacion
      WHERE (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.codigo_barras LIKE ? OR l.numero_lote LIKE ?)
        AND (? IS NULL OR e.id_almacen = ?)
+       AND (? IS NULL OR p.tipo_producto = ?)
      ORDER BY p.nombre_comercial, l.fecha_vencimiento ASC`,
-    [search, wildcard, wildcard, wildcard, wildcard, idAlmacen, idAlmacen]
+    [search, wildcard, wildcard, wildcard, wildcard, idAlmacen, idAlmacen, tipoProducto, tipoProducto]
   );
 }
 
@@ -514,6 +516,34 @@ export async function registerBarcodeEgress(payload, userId) {
 
 export async function createMovement(payload, userId) {
   return withTransaction(async (connection) => {
+    // Sin id_lote (producto nunca antes registrado en esta bodega, o lote
+    // nuevo de uno ya conocido): se busca por producto + número de lote y,
+    // si no existe, se crea — mismo patrón idempotente que usa Ingresos
+    // Pharma al recibir mercancía (ver actualizarInventario en
+    // ingresos.routes.js), para que Movimiento de Entrada también pueda dar
+    // de alta stock de un producto/lote que hoy no tiene ningún registro.
+    if (!payload.id_lote && payload.id_producto) {
+      const numeroLote = (payload.numero_lote ?? '').trim() || `LOTE-AUTO-${Date.now()}`;
+      const fechaVencimiento = payload.fecha_vencimiento || '2099-12-31';
+
+      const [existingLoteRows] = await connection.execute(
+        `SELECT id_lote FROM lotes WHERE id_producto = ? AND numero_lote = ? LIMIT 1`,
+        [payload.id_producto, numeroLote]
+      );
+
+      if (existingLoteRows[0]) {
+        payload.id_lote = existingLoteRows[0].id_lote;
+      } else {
+        const costo = payload.costo_unitario ?? 0;
+        const [insertResult] = await connection.execute(
+          `INSERT INTO lotes (id_producto, numero_lote, fecha_vencimiento, costo_unitario, precio_venta, estado)
+           VALUES (?, ?, ?, ?, ?, 'disponible')`,
+          [payload.id_producto, numeroLote, fechaVencimiento, costo, costo]
+        );
+        payload.id_lote = insertResult.insertId;
+      }
+    }
+
     const [loteRows] = await connection.execute(
       `SELECT l.*, p.id_producto
        FROM lotes l

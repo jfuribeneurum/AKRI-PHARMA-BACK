@@ -59,7 +59,7 @@ trasladosRouter.patch(
   authRequired,
   validate(recibirSchema),
   asyncHandler(async (req, res) => {
-    const data = await recibirTraslado(Number(req.params.id), req.user.sub, req.body.observaciones);
+    const data = await recibirTraslado(Number(req.params.id), req.user.sub, req.body.observaciones, req.user.id_almacen ?? null);
     res.json({ success: true, data });
   })
 );
@@ -69,7 +69,7 @@ trasladosRouter.patch(
   authRequired,
   validate(rechazarSchema),
   asyncHandler(async (req, res) => {
-    const data = await rechazarTraslado(Number(req.params.id), req.user.sub, req.body.motivo);
+    const data = await rechazarTraslado(Number(req.params.id), req.user.sub, req.body.motivo, req.user.id_almacen ?? null);
     res.json({ success: true, data });
   })
 );

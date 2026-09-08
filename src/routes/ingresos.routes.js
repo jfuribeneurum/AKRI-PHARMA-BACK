@@ -529,6 +529,115 @@ router.get('/:id', asyncHandler(async (req, res) => {
 }));
 
 // ──────────────────────────────────────────────
+// POST /ingresos/:id/anular — anula un ingreso ya registrado por error.
+// No se borra (se necesita trazabilidad del ingreso errado): queda en
+// estado 'anulado' y se revierte exactamente el inventario que había
+// movido al crearse (mismo lote/almacén/ubicación), dejando un movimiento
+// de ajuste como rastro de la reversión.
+// ──────────────────────────────────────────────
+const anularSchema = z.object({
+  motivo: z.string().max(255).optional().nullable(),
+});
+
+router.post('/:id/anular', validate(anularSchema), asyncHandler(async (req, res) => {
+  const idIngreso = Number(req.params.id);
+  const { motivo } = req.body;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [[ingreso]] = await connection.query(
+      `SELECT * FROM ingresos WHERE id_ingreso = ? FOR UPDATE`,
+      [idIngreso]
+    );
+    if (!ingreso) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Ingreso no encontrado' });
+    }
+    if (ingreso.estado === 'anulado') {
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'Este ingreso ya fue anulado.' });
+    }
+
+    const [movimientos] = await connection.query(
+      `SELECT * FROM movimientos_inventario WHERE referencia_tipo = 'ingreso_pharma' AND referencia_id = ? FOR UPDATE`,
+      [idIngreso]
+    );
+
+    for (const mov of movimientos) {
+      const esEntrada = mov.tipo === 'entrada_compra';
+      const idAlmacen   = esEntrada ? mov.id_almacen_destino   : mov.id_almacen_origen;
+      const idUbicacion = esEntrada ? mov.id_ubicacion_destino : mov.id_ubicacion_origen;
+      if (!idAlmacen || !idUbicacion) continue;
+
+      const [[existencia]] = await connection.query(
+        `SELECT id_existencia, cantidad_disponible FROM existencias
+          WHERE id_lote = ? AND id_almacen = ? AND id_ubicacion = ? FOR UPDATE`,
+        [mov.id_lote, idAlmacen, idUbicacion]
+      );
+      // Si ya no queda ese registro de existencia (movido/consumido de otra
+      // forma después), no hay nada físico que revertir ahí — se sigue de
+      // largo y el ingreso igual queda anulado por trazabilidad.
+      if (!existencia) continue;
+
+      if (esEntrada) {
+        // Tope en 0: si ya se despachó parte de lo que entró por error, no
+        // se puede dejar el saldo en negativo.
+        await connection.query(
+          `UPDATE existencias SET cantidad_disponible = GREATEST(0, cantidad_disponible - ?) WHERE id_existencia = ?`,
+          [mov.cantidad, existencia.id_existencia]
+        );
+      } else {
+        // Era una devolución (salida) registrada en este ingreso — anularla repone la cantidad.
+        await connection.query(
+          `UPDATE existencias SET cantidad_disponible = cantidad_disponible + ? WHERE id_existencia = ?`,
+          [mov.cantidad, existencia.id_existencia]
+        );
+      }
+
+      await connection.query(
+        `INSERT INTO movimientos_inventario (
+           tipo, id_producto, id_lote,
+           id_almacen_origen, id_ubicacion_origen, id_almacen_destino, id_ubicacion_destino,
+           cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, id_usuario
+         ) VALUES ('ajuste', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ANULACION_INGRESO', ?, ?)`,
+        [
+          mov.id_producto, mov.id_lote,
+          esEntrada ? idAlmacen : null, esEntrada ? idUbicacion : null,
+          esEntrada ? null : idAlmacen, esEntrada ? null : idUbicacion,
+          mov.cantidad, mov.costo_unitario,
+          `Anulación de ingreso ${ingreso.referencia}${motivo ? ': ' + motivo : ''}`,
+          idIngreso, req.user?.sub ?? null
+        ]
+      );
+    }
+
+    await connection.query(
+      `UPDATE ingresos SET estado = 'anulado', updated_at = NOW() WHERE id_ingreso = ?`,
+      [idIngreso]
+    );
+
+    await recordProcessTrace(connection, {
+      proceso: 'COMPRAS',
+      subproceso: 'INGRESO_ANULACION',
+      id_usuario: req.user?.sub ?? null,
+      referencia_tipo: 'INGRESO',
+      referencia_id: idIngreso,
+      descripcion: `Ingreso ${ingreso.referencia} anulado${motivo ? ' — ' + motivo : ''}`,
+      payload_json: { motivo: motivo ?? null }
+    });
+
+    await connection.commit();
+    res.json({ success: true, message: 'Ingreso anulado correctamente.' });
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  } finally {
+    connection.release();
+  }
+}));
+
+// ──────────────────────────────────────────────
 // PUT /ingresos/:id
 // ──────────────────────────────────────────────
 router.put('/:id', asyncHandler(async (req, res) => {

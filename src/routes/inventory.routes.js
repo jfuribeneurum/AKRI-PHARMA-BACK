@@ -24,7 +24,13 @@ const movementSchema = z.object({
     'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
     'inventario_sobrante_fisico', 'bonificacion'
   ]),
-  id_lote: z.number().int(),
+  id_lote: z.number().int().optional().nullable(),
+  // Alternativa a id_lote cuando el lote todavía no existe (producto nunca
+  // antes registrado en esta bodega, o lote nuevo de uno ya conocido) — ver
+  // createMovement, que lo busca o lo crea antes de mover inventario.
+  id_producto: z.number().int().optional().nullable(),
+  numero_lote: z.string().optional().nullable(),
+  fecha_vencimiento: z.string().optional().nullable(),
   id_almacen_origen: z.number().int().optional().nullable(),
   id_ubicacion_origen: z.number().int().optional().nullable(),
   id_almacen_destino: z.number().int().optional().nullable(),
@@ -34,6 +40,9 @@ const movementSchema = z.object({
   motivo: z.string().optional().nullable(),
   referencia_tipo: z.string().optional().nullable(),
   referencia_id: z.number().int().optional().nullable()
+}).refine((data) => data.id_lote != null || data.id_producto != null, {
+  message: 'Debes indicar id_lote o id_producto',
+  path: ['id_lote']
 });
 
 const barcodeResolveSchema = z.object({
@@ -110,7 +119,8 @@ inventoryRouter.get(
   '/stock',
   authRequired,
   asyncHandler(async (req, res) => {
-    const data = await listStock(String(req.query.search ?? ''), req.user.id_almacen ?? null);
+    const tipoProducto = req.query.tipo_producto ? String(req.query.tipo_producto) : null;
+    const data = await listStock(String(req.query.search ?? ''), req.user.id_almacen ?? null, tipoProducto);
     res.json({ success: true, data });
   })
 );

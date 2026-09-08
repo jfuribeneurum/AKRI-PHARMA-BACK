@@ -350,14 +350,22 @@ async function saveTrace({ proceso, subproceso, estado = 'terminado', idUsuario 
   } catch { /* trazabilidad es no-crítica */ }
 }
 
-export async function checkPresentacionDuplicate(presentacion, idLaboratorio, excludeId = null) {
-  if (presentacion == null || presentacion === '') return null;
+// El identificador que realmente distingue un registro sanitario de otro es
+// el CUM completo (cum + consecutivo_cum, asignado por INVIMA) — no el
+// laboratorio ni la presentación (tamaño de empaque), que se repiten
+// constantemente entre productos que no tienen nada que ver entre sí (ej.
+// "30 tabletas" o un consecutivo terminado en el mismo dígito). Comparar por
+// esos campos sueltos genera falsos positivos: dos medicamentos distintos del
+// mismo laboratorio quedaban bloqueados por coincidir en presentación o en el
+// último dígito del consecutivo, aun con CUM base totalmente diferente.
+export async function checkCumDuplicate(cum, consecutivoCum, excludeId = null) {
+  if (cum == null || cum === '') return null;
   const params = excludeId
-    ? [presentacion, idLaboratorio ?? null, excludeId]
-    : [presentacion, idLaboratorio ?? null];
+    ? [cum, consecutivoCum ?? null, excludeId]
+    : [cum, consecutivoCum ?? null];
   const rows = await query(
     `SELECT codigo_control FROM productos
-     WHERE presentacion = ? AND id_laboratorio <=> ?
+     WHERE cum = ? AND consecutivo_cum <=> ?
      ${excludeId ? 'AND id_producto != ?' : ''}
      LIMIT 1`,
     params
@@ -365,7 +373,7 @@ export async function checkPresentacionDuplicate(presentacion, idLaboratorio, ex
   return rows[0]?.codigo_control ?? null;
 }
 
-export async function getNextControlCode(sku, idLaboratorio, consecutivoCum) {
+export async function getNextControlCode(sku, idLaboratorio, cum, consecutivoCum) {
   if (!sku) return { codigo_control: null, duplicate_cum: null };
 
   // Formato: {sku}-{id_laboratorio}.{consecutivo_cum}
@@ -375,44 +383,26 @@ export async function getNextControlCode(sku, idLaboratorio, consecutivoCum) {
   const cumSuffix = lastCum ? `.${lastCum}` : '';
   const codigo_control = `${sku}-${labPart}${cumSuffix}`;
 
-  // Duplicado: mismo consecutivo_cum + mismo laboratorio
-  let duplicate_cum = null;
-  if (consecutivoCum != null && consecutivoCum !== '') {
-    const dupCum = await query(
-      `SELECT codigo_control FROM productos WHERE consecutivo_cum = ? AND id_laboratorio <=> ? LIMIT 1`,
-      [consecutivoCum, idLaboratorio ?? null]
-    );
-    duplicate_cum = dupCum[0]?.codigo_control ?? null;
-  }
+  const duplicate_cum = await checkCumDuplicate(cum, consecutivoCum);
 
   return { codigo_control, duplicate_cum };
 }
 
 export async function createProduct(payload, userId = null) {
-  // Duplicado: misma presentacion + mismo laboratorio
-  if (payload.presentacion != null) {
-    const dupPresentacion = await checkPresentacionDuplicate(payload.presentacion, payload.id_laboratorio);
-    if (dupPresentacion) {
+  // Duplicado: mismo CUM completo (cum + consecutivo_cum) — el identificador
+  // real que asigna INVIMA. Ver checkCumDuplicate.
+  if (payload.cum != null) {
+    const dupCum = await checkCumDuplicate(payload.cum, payload.consecutivo_cum);
+    if (dupCum) {
       await saveTrace({
-        proceso: 'maestro_mx', subproceso: 'presentacion_duplicada_bloqueada', estado: 'cancelado',
+        proceso: 'maestro_mx', subproceso: 'cum_duplicado_bloqueado', estado: 'cancelado',
         idUsuario: userId, referenciaTipo: 'producto',
-        descripcion: `Intento bloqueado: presentación ${payload.presentacion} ya asociada a ${dupPresentacion}`,
-        payload: { presentacion: payload.presentacion, id_laboratorio: payload.id_laboratorio, codigo_control_existente: dupPresentacion, sku: payload.sku }
+        descripcion: `Intento bloqueado: CUM ${payload.cum}-${payload.consecutivo_cum ?? ''} ya registrado en ${dupCum}`,
+        payload: { cum: payload.cum, consecutivo_cum: payload.consecutivo_cum, codigo_control_existente: dupCum, sku: payload.sku }
       });
-      throw new HttpError(409, `La presentación "${payload.presentacion}" ya está asociada a "${dupPresentacion}" para ese laboratorio.`);
-    }
-  }
-
-  // Duplicado: mismo consecutivo_cum + mismo laboratorio
-  if (payload.consecutivo_cum != null) {
-    const existing = await query(
-      `SELECT codigo_control FROM productos WHERE consecutivo_cum = ? AND id_laboratorio <=> ? LIMIT 1`,
-      [payload.consecutivo_cum, payload.id_laboratorio ?? null]
-    );
-    if (existing[0]) {
       throw new HttpError(
         409,
-        `Ya existe "${existing[0].codigo_control}" con el consecutivo CUM "${payload.consecutivo_cum}" para ese laboratorio. No se puede crear un duplicado.`
+        `Ya existe "${dupCum}" con el mismo CUM "${payload.cum}${payload.consecutivo_cum != null ? `-${payload.consecutivo_cum}` : ''}". No se puede crear un duplicado.`
       );
     }
   }
@@ -482,17 +472,20 @@ export async function updateProduct(id, payload, userId = null) {
   const current = await ensureProductExists(id);
   const merged = { ...current, ...payload };
 
-  // Duplicado: misma presentacion + mismo laboratorio (excluyendo el propio producto)
-  if (merged.presentacion != null) {
-    const dupPresentacion = await checkPresentacionDuplicate(merged.presentacion, merged.id_laboratorio, id);
-    if (dupPresentacion) {
+  // Duplicado: mismo CUM completo (cum + consecutivo_cum), excluyendo el propio producto
+  if (merged.cum != null) {
+    const dupCum = await checkCumDuplicate(merged.cum, merged.consecutivo_cum, id);
+    if (dupCum) {
       await saveTrace({
-        proceso: 'maestro_mx', subproceso: 'presentacion_duplicada_bloqueada', estado: 'cancelado',
+        proceso: 'maestro_mx', subproceso: 'cum_duplicado_bloqueado', estado: 'cancelado',
         idUsuario: userId, referenciaTipo: 'producto', referenciaId: id,
-        descripcion: `Edición bloqueada: presentación ${merged.presentacion} ya asociada a ${dupPresentacion}`,
-        payload: { id_producto: id, presentacion: merged.presentacion, id_laboratorio: merged.id_laboratorio, codigo_control_existente: dupPresentacion }
+        descripcion: `Edición bloqueada: CUM ${merged.cum}-${merged.consecutivo_cum ?? ''} ya registrado en ${dupCum}`,
+        payload: { id_producto: id, cum: merged.cum, consecutivo_cum: merged.consecutivo_cum, codigo_control_existente: dupCum }
       });
-      throw new HttpError(409, `La presentación "${merged.presentacion}" ya está asociada a "${dupPresentacion}" para ese laboratorio.`);
+      throw new HttpError(
+        409,
+        `Ya existe "${dupCum}" con el mismo CUM "${merged.cum}${merged.consecutivo_cum != null ? `-${merged.consecutivo_cum}` : ''}". No se puede crear un duplicado.`
+      );
     }
   }
 

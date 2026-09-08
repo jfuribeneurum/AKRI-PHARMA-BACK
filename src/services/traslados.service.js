@@ -118,7 +118,13 @@ export async function listTraslados(filters = {}) {
 }
 
 /* ─── Confirmar recepción ─────────────────────────────────────────────────── */
-export async function recibirTraslado(id, userId, observaciones) {
+// idAlmacenUsuario: la bodega activa de quien confirma — un traslado solo lo
+// puede recibir alguien realmente ubicado en la bodega destino (igual que
+// "Bodega emisora" en Enviar traslado siempre es la propia bodega activa, no
+// cualquiera del mismo grupo de sede). Sin este chequeo, cualquier usuario
+// autenticado podía confirmar la recepción de un traslado destinado a una
+// bodega de otra sede con solo conocer su id.
+export async function recibirTraslado(id, userId, observaciones, idAlmacenUsuario = null) {
   return withTransaction(async (connection) => {
     const [tRows] = await connection.execute(
       `SELECT * FROM traslados WHERE id_traslado = ? FOR UPDATE`,
@@ -128,6 +134,9 @@ export async function recibirTraslado(id, userId, observaciones) {
     if (!t) throw new HttpError(404, 'Traslado no encontrado');
     if (t.estado !== 'pendiente') {
       throw new HttpError(400, `El traslado ya fue ${t.estado}`);
+    }
+    if (idAlmacenUsuario != null && Number(t.id_almacen_destino) !== Number(idAlmacenUsuario)) {
+      throw new HttpError(403, 'Este traslado no está destinado a tu bodega activa');
     }
 
     // Verificar stock origen
@@ -213,7 +222,7 @@ export async function recibirTraslado(id, userId, observaciones) {
 }
 
 /* ─── Rechazar traslado ───────────────────────────────────────────────────── */
-export async function rechazarTraslado(id, userId, motivo) {
+export async function rechazarTraslado(id, userId, motivo, idAlmacenUsuario = null) {
   return withTransaction(async (connection) => {
     const [tRows] = await connection.execute(
       `SELECT * FROM traslados WHERE id_traslado = ? FOR UPDATE`,
@@ -223,6 +232,9 @@ export async function rechazarTraslado(id, userId, motivo) {
     if (!t) throw new HttpError(404, 'Traslado no encontrado');
     if (t.estado !== 'pendiente') {
       throw new HttpError(400, `El traslado ya fue ${t.estado}`);
+    }
+    if (idAlmacenUsuario != null && Number(t.id_almacen_destino) !== Number(idAlmacenUsuario)) {
+      throw new HttpError(403, 'Este traslado no está destinado a tu bodega activa');
     }
 
     await connection.execute(

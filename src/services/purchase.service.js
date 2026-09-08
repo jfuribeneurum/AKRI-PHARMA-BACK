@@ -124,8 +124,16 @@ export async function listWarehousesForPO(idSedeOrIds = null) {
 }
 
 // Sedes que la sesión activa puede gestionar (mismo grupo de ciudad) — usado
-// para acotar el picker de "Bodega de destino" al crear una orden de compra.
+// para acotar el picker de "Bodega de destino" al crear una orden de compra,
+// registrar un ingreso o elegir bodega receptora en un traslado. Un
+// ADMINISTRADOR no se limita al grupo de ciudad de su sede activa: debe
+// poder operar sobre las 4 sedes (mismo criterio ya aplicado al login/
+// selección de sede en auth.service.js — ver getUserAccess).
 export async function getSedeGroupIdsForUser(user) {
+  if (user?.role === 'ADMINISTRADOR') {
+    const rows = await query(`SELECT id_sede FROM sedes WHERE activo = TRUE`);
+    return rows.map(r => Number(r.id_sede));
+  }
   const site = await assertSedeActivaValida(user);
   return getSedeGroupIds(site.ciudad);
 }
