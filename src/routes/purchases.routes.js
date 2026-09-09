@@ -13,7 +13,8 @@ import {
   receivePurchaseOrder,
   previewNextNumeroOC,
   listWarehousesForPO,
-  getSedeGroupIdsForUser
+  getSedeGroupIdsForUser,
+  listWarehousesForOwnCity
 } from '../services/purchase.service.js';
 
 const purchaseItemSchema = z.object({
@@ -76,7 +77,15 @@ purchasesRouter.get(
   asyncHandler(async (req, res) => {
     // Solo se ofrecen como destino las sedes que esta sesión puede
     // gestionar (su grupo de ciudad) — alguien activo en Hemofilia ve
-    // Diabetes y Hemofilia, pero no Cali ni Pereira.
+    // Diabetes y Hemofilia, pero no Cali ni Pereira. scope=propia fuerza el
+    // agrupamiento por ciudad incluso para ADMINISTRADOR (usado por pantallas
+    // que registran mercancía en un lugar físico real, no gestión general) y
+    // resuelve todo en una sola consulta (ver listWarehousesForOwnCity) en
+    // vez de la cadena de 3 round-trips de getSedeGroupIdsForUser.
+    if (req.query.scope === 'propia') {
+      const data = await listWarehousesForOwnCity(req.user?.id_sede ?? null);
+      return res.json({ success: true, data });
+    }
     const groupIds = await getSedeGroupIdsForUser(req.user);
     const data = await listWarehousesForPO(groupIds);
     res.json({ success: true, data });

@@ -20,7 +20,7 @@ const { query, withTransaction } = await import('../../config/db.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
 const {
   listWarehousesForPO, receivePurchaseOrder, getPurchaseOrder, approvePurchaseOrder, cancelPurchaseOrder,
-  createPurchaseOrder, updatePurchaseOrder, listPurchases, getSedeGroupIdsForUser
+  createPurchaseOrder, updatePurchaseOrder, listPurchases, getSedeGroupIdsForUser, listWarehousesForOwnCity
 } = await import('../purchase.service.js');
 
 function mockConnection(routes) {
@@ -68,6 +68,12 @@ describe('purchase.service listWarehousesForPO', () => {
     expect(result).toEqual([]);
     expect(query).not.toHaveBeenCalled();
   });
+
+  it('only offers each sede\'s main almacén, never its internal sub-almacenes', async () => {
+    await listWarehousesForPO();
+    const [sql] = query.mock.calls[0];
+    expect(sql).toMatch(/a\.es_principal = TRUE/);
+  });
 });
 
 // El picker de "Bodega de destino" al crear una OC usa esto para no ofrecer
@@ -101,6 +107,42 @@ describe('purchase.service getSedeGroupIdsForUser', () => {
     query.mockResolvedValueOnce([]);
 
     await expect(getSedeGroupIdsForUser({ id_sede: 99 })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('an ADMINISTRADOR active in Cali sees all 4 sedes (management bypass)', async () => {
+    query.mockResolvedValueOnce([{ id_sede: 1 }, { id_sede: 2 }, { id_sede: 3 }, { id_sede: 4 }]);
+
+    const ids = await getSedeGroupIdsForUser({ id_sede: 2, role: 'ADMINISTRADOR' });
+
+    expect(ids).toEqual([1, 2, 3, 4]);
+  });
+});
+
+// listWarehousesForOwnCity nunca aplica el bypass de ADMINISTRADOR y resuelve
+// todo en UNA sola consulta (a diferencia de getSedeGroupIdsForUser +
+// listWarehousesForPO, que son 2-3 round-trips encadenados) — se usa en
+// pantallas que reciben mercancía en un lugar físico real (bodega destino de
+// una entrada), donde solo importa la ciudad de la sede activa y la latencia
+// del picker es visible para quien está registrando el movimiento.
+describe('purchase.service listWarehousesForOwnCity', () => {
+  beforeEach(() => {
+    query.mockReset();
+    query.mockResolvedValue([]);
+  });
+
+  it('resolves the warehouse list with a single query', async () => {
+    await listWarehousesForOwnCity(3);
+    expect(query).toHaveBeenCalledTimes(1);
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/UPPER\(TRIM\(s2\.ciudad\)\) = UPPER\(TRIM\(s1\.ciudad\)\)/);
+    expect(sql).toMatch(/a\.es_principal = TRUE/);
+    expect(params).toEqual([3]);
+  });
+
+  it('short-circuits to an empty list without querying when no active sede is given', async () => {
+    const result = await listWarehousesForOwnCity(null);
+    expect(result).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
   });
 });
 

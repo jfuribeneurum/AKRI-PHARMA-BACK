@@ -104,9 +104,14 @@ async function nextNumeroOC(connection) {
 }
 
 // Acepta un solo id_sede (compat), un arreglo de ids (grupo de sede por
-// ciudad) o null (todas). El picker de "Bodega de destino" al crear una OC
-// solo debe ofrecer sedes que esa sesión realmente puede gestionar — ver
-// getSedeGroupIdsForUser.
+// ciudad) o null (todas). El picker de "Bodega de destino" (crear OC,
+// registrar entrada, recibir traslado) solo debe ofrecer sedes que esa
+// sesión realmente puede gestionar — ver getSedeGroupIdsForUser. Se limita
+// además a a.es_principal = TRUE: cada sede tiene un único almacén marcado
+// como principal (los demás son sub-almacenes internos — cadena de frío,
+// bóveda de controlados, etc.), así que este picker siempre lista como
+// máximo una fila por sede — 4 en total en todo el sistema — en vez de los
+// 11 almacenes físicos reales.
 export async function listWarehousesForPO(idSedeOrIds = null) {
   const ids = idSedeOrIds == null ? null : (Array.isArray(idSedeOrIds) ? idSedeOrIds : [idSedeOrIds]);
   if (ids && !ids.length) return [];
@@ -116,7 +121,7 @@ export async function listWarehousesForPO(idSedeOrIds = null) {
             s.id_sede, s.nombre AS sede_nombre, s.ciudad AS sede_ciudad, s.direccion AS sede_direccion
        FROM almacenes a
        INNER JOIN sedes s ON s.id_sede = a.id_sede
-      WHERE a.activo = TRUE AND s.activo = TRUE
+      WHERE a.activo = TRUE AND s.activo = TRUE AND a.es_principal = TRUE
         ${ids ? `AND s.id_sede IN (${ids.map(() => '?').join(',')})` : ''}
       ORDER BY s.es_principal DESC, s.nombre ASC, a.es_principal DESC, a.nombre ASC`,
     ids ?? []
@@ -136,6 +141,30 @@ export async function getSedeGroupIdsForUser(user) {
   }
   const site = await assertSedeActivaValida(user);
   return getSedeGroupIds(site.ciudad);
+}
+
+// Bodegas de destino para la ciudad de la sede activa, SIN el bypass de
+// ADMINISTRADOR (siempre agrupa por ciudad, sin importar el rol) — usado
+// donde la sede elegida corresponde a un lugar físico real al que hay que
+// llevar mercancía (ej. "Bodega destino" al registrar una entrada): un admin
+// puede gestionar las 4 sedes desde el sistema, pero al registrar una
+// entrada física solo tiene sentido ofrecer las bodegas de la ciudad donde
+// está parado (con Medellín mostrando sus 2 sedes, Hemofilia y Diabetes).
+// Resuelto en UNA sola consulta (autojoin de sedes contra sí misma por
+// ciudad) en vez de la cadena de 3 round-trips secuenciales que usaba antes
+// (sede activa -> grupo de ciudad -> almacenes), que tardaba hasta ~800ms.
+export async function listWarehousesForOwnCity(idSedeActiva) {
+  if (!idSedeActiva) return [];
+  return query(
+    `SELECT a.id_almacen, a.codigo, a.nombre, a.tipo,
+            s2.id_sede, s2.nombre AS sede_nombre, s2.ciudad AS sede_ciudad, s2.direccion AS sede_direccion
+       FROM sedes s1
+       INNER JOIN sedes s2 ON UPPER(TRIM(s2.ciudad)) = UPPER(TRIM(s1.ciudad)) AND s2.activo = TRUE
+       INNER JOIN almacenes a ON a.id_sede = s2.id_sede AND a.activo = TRUE AND a.es_principal = TRUE
+      WHERE s1.id_sede = ? AND s1.activo = TRUE
+      ORDER BY s2.es_principal DESC, s2.nombre ASC, a.es_principal DESC, a.nombre ASC`,
+    [idSedeActiva]
+  );
 }
 
 export async function previewNextNumeroOC() {
