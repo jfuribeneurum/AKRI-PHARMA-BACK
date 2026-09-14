@@ -14,7 +14,7 @@ vi.mock('../traceability.service.js', () => ({
 
 const { query } = await import('../../config/db.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
-const { createTraslado } = await import('../traslados.service.js');
+const { createTraslado, listTraslados } = await import('../traslados.service.js');
 
 describe('traslados.service createTraslado', () => {
   beforeEach(() => {
@@ -51,5 +51,34 @@ describe('traslados.service createTraslado', () => {
     )).rejects.toThrow(/Stock insuficiente/);
 
     expect(recordProcessTrace).not.toHaveBeenCalled();
+  });
+});
+
+describe('traslados.service listTraslados', () => {
+  beforeEach(() => {
+    query.mockReset();
+    query.mockResolvedValue([]);
+  });
+
+  it('id_almacen: matches either origen OR destino, unlike id_almacen_origen/destino (exact match) — needed for the Historial tab', async () => {
+    await listTraslados({ id_almacen: 6 });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/\(t\.id_almacen_origen = \? OR t\.id_almacen_destino = \?\)/);
+    expect(params).toEqual([6, 6]);
+  });
+
+  it('is unfiltered (no WHERE, no params) when no filters are given', async () => {
+    await listTraslados();
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).not.toMatch(/WHERE/);
+    expect(params).toEqual([]);
+  });
+
+  it('combines estado with id_almacen when both are given', async () => {
+    await listTraslados({ estado: 'pendiente', id_almacen: 6 });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/t\.estado = \?/);
+    expect(sql).toMatch(/\(t\.id_almacen_origen = \? OR t\.id_almacen_destino = \?\)/);
+    expect(params).toEqual(['pendiente', 6, 6]);
   });
 });

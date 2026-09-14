@@ -157,7 +157,7 @@ export async function listStock(search = '', idAlmacen = null, tipoProducto = nu
   );
 }
 
-export async function getInventoryLookups(idSede = null) {
+export async function getInventoryLookups(idSede = null, almacenIds = null) {
   const almacenes = await query(
     `SELECT id_almacen, codigo, nombre, tipo FROM almacenes
       WHERE activo = TRUE AND (? IS NULL OR id_sede = ?)
@@ -165,22 +165,165 @@ export async function getInventoryLookups(idSede = null) {
     [idSede, idSede]
   );
 
-  const ubicaciones = await query(
-    `SELECT u.id_ubicacion, u.id_almacen, u.codigo, u.nombre, u.tipo, u.permite_controlados,
-            u.requiere_cadena_frio, a.nombre AS almacen, a.tipo AS tipo_almacen
-     FROM ubicaciones_almacen u
-     INNER JOIN almacenes a ON a.id_almacen = u.id_almacen
-     WHERE u.activo = TRUE
-       AND (? IS NULL OR a.id_sede = ?)
-     ORDER BY a.nombre ASC, u.nombre ASC`,
-    [idSede, idSede]
-  );
+  // Por defecto las ubicaciones se acotan a la sede activa literal. Cuando
+  // se pasa almacenIds (p.ej. "Bodega destino" en Movimiento de Entrada, que
+  // ofrece las bodegas principales de TODAS las sedes de la misma ciudad —
+  // ver listWarehousesForOwnCity) hay que resolver ubicaciones para esas
+  // bodegas también, o el destino elegido nunca tiene ubicación y
+  // resolveUbicacionDestino falla con "la bodega destino no tiene
+  // ubicaciones configuradas" aunque sí las tenga.
+  const ubicaciones = Array.isArray(almacenIds) && almacenIds.length
+    ? await query(
+        `SELECT u.id_ubicacion, u.id_almacen, u.codigo, u.nombre, u.tipo, u.permite_controlados,
+                u.requiere_cadena_frio, a.nombre AS almacen, a.tipo AS tipo_almacen
+         FROM ubicaciones_almacen u
+         INNER JOIN almacenes a ON a.id_almacen = u.id_almacen
+         WHERE u.activo = TRUE
+           AND u.id_almacen IN (${almacenIds.map(() => '?').join(',')})
+         ORDER BY a.nombre ASC, u.nombre ASC`,
+        almacenIds
+      )
+    : await query(
+        `SELECT u.id_ubicacion, u.id_almacen, u.codigo, u.nombre, u.tipo, u.permite_controlados,
+                u.requiere_cadena_frio, a.nombre AS almacen, a.tipo AS tipo_almacen
+         FROM ubicaciones_almacen u
+         INNER JOIN almacenes a ON a.id_almacen = u.id_almacen
+         WHERE u.activo = TRUE
+           AND (? IS NULL OR a.id_sede = ?)
+         ORDER BY a.nombre ASC, u.nombre ASC`,
+        [idSede, idSede]
+      );
 
   return {
     almacenes,
     ubicaciones,
     tipos_egreso: ['salida_venta', 'merma', 'devolucion_compra', 'destruccion']
   };
+}
+
+// Historial para las pantallas Movimiento de Entrada / Movimiento de Salida.
+// Se distingue "entrada pura" (solo tiene destino, sin origen) de "salida
+// pura" (solo tiene origen, sin destino) por el mismo patrón que ya usa
+// createMovement — así quedan afuera los traslados (que llenan ambos) y
+// cada pantalla solo ve lo que ella misma pudo haber registrado.
+export async function listMovementHistory({ almacenIds, direction, limit = 50 }) {
+  if (!Array.isArray(almacenIds) || !almacenIds.length) return [];
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
+  const placeholders = almacenIds.map(() => '?').join(',');
+  const almacenColumn = direction === 'salida' ? 'id_almacen_origen' : 'id_almacen_destino';
+  const ubicacionColumn = direction === 'salida' ? 'id_ubicacion_origen' : 'id_ubicacion_destino';
+  const otherColumn = direction === 'salida' ? 'id_almacen_destino' : 'id_almacen_origen';
+
+  return query(
+    `SELECT m.id_movimiento, m.fecha_hora, m.tipo, m.cantidad, m.costo_unitario, m.motivo,
+            p.nombre_comercial, p.sku,
+            l.numero_lote,
+            a.nombre AS almacen_nombre,
+            ub.nombre AS ubicacion_nombre,
+            usr.nombre_completo AS usuario_nombre,
+            EXISTS (
+              SELECT 1 FROM movimientos_inventario r
+               WHERE r.referencia_tipo = 'ANULACION_MOVIMIENTO' AND r.referencia_id = m.id_movimiento
+            ) AS anulado
+       FROM movimientos_inventario m
+       INNER JOIN productos p ON p.id_producto = m.id_producto
+       LEFT JOIN lotes l ON l.id_lote = m.id_lote
+       LEFT JOIN almacenes a ON a.id_almacen = m.${almacenColumn}
+       LEFT JOIN ubicaciones_almacen ub ON ub.id_ubicacion = m.${ubicacionColumn}
+       LEFT JOIN usuarios usr ON usr.id_usuario = m.id_usuario
+      WHERE m.${almacenColumn} IN (${placeholders})
+        AND m.${otherColumn} IS NULL
+      ORDER BY m.fecha_hora DESC
+      LIMIT ${safeLimit}`,
+    almacenIds
+  );
+}
+
+// Anula un movimiento manual de entrada/salida (no un traslado — id_lote no
+// puede tener origen Y destino a la vez, eso se revierte desde Traslados).
+// Mismo patrón que /ingresos/:id/anular y anularEntregaHS: el ledger es
+// append-only, así que no se borra la fila — se revierte exactamente el
+// stock que movió (con tope en 0 para no dejar saldo negativo si ya se
+// consumió después) y se inserta un movimiento de ajuste que referencia al
+// original, dejando trazabilidad completa de quién anuló qué y por qué.
+export async function anularMovimiento(idMovimiento, userId, motivo = null) {
+  return withTransaction(async (connection) => {
+    const [movRows] = await connection.execute(
+      `SELECT * FROM movimientos_inventario WHERE id_movimiento = ? FOR UPDATE`,
+      [idMovimiento]
+    );
+    const mov = movRows[0];
+    if (!mov) {
+      throw new HttpError(404, 'Movimiento no encontrado');
+    }
+    if (mov.id_almacen_origen && mov.id_almacen_destino) {
+      throw new HttpError(400, 'Este movimiento es un traslado; anúlalo desde Traslados.');
+    }
+    if (!mov.id_almacen_origen && !mov.id_almacen_destino) {
+      throw new HttpError(400, 'Este movimiento no tiene bodega asociada y no se puede anular.');
+    }
+
+    const [yaAnuladoRows] = await connection.execute(
+      `SELECT id_movimiento FROM movimientos_inventario
+        WHERE referencia_tipo = 'ANULACION_MOVIMIENTO' AND referencia_id = ?`,
+      [idMovimiento]
+    );
+    if (yaAnuladoRows.length) {
+      throw new HttpError(400, 'Este movimiento ya fue anulado.');
+    }
+
+    const esEntrada = !!mov.id_almacen_destino;
+    const idAlmacen = esEntrada ? mov.id_almacen_destino : mov.id_almacen_origen;
+    const idUbicacion = esEntrada ? mov.id_ubicacion_destino : mov.id_ubicacion_origen;
+
+    const [existRows] = await connection.execute(
+      `SELECT id_existencia FROM existencias
+        WHERE id_lote = ? AND id_almacen = ? AND id_ubicacion = ? FOR UPDATE`,
+      [mov.id_lote, idAlmacen, idUbicacion]
+    );
+    const existencia = existRows[0];
+    if (existencia) {
+      if (esEntrada) {
+        await connection.execute(
+          `UPDATE existencias SET cantidad_disponible = GREATEST(0, cantidad_disponible - ?) WHERE id_existencia = ?`,
+          [mov.cantidad, existencia.id_existencia]
+        );
+      } else {
+        await connection.execute(
+          `UPDATE existencias SET cantidad_disponible = cantidad_disponible + ? WHERE id_existencia = ?`,
+          [mov.cantidad, existencia.id_existencia]
+        );
+      }
+    }
+
+    const [result] = await connection.execute(
+      `INSERT INTO movimientos_inventario (
+         tipo, id_producto, id_lote,
+         id_almacen_origen, id_ubicacion_origen, id_almacen_destino, id_ubicacion_destino,
+         cantidad, costo_unitario, motivo, referencia_tipo, referencia_id, id_usuario
+       ) VALUES ('ajuste', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ANULACION_MOVIMIENTO', ?, ?)`,
+      [
+        mov.id_producto, mov.id_lote,
+        esEntrada ? idAlmacen : null, esEntrada ? idUbicacion : null,
+        esEntrada ? null : idAlmacen, esEntrada ? null : idUbicacion,
+        mov.cantidad, mov.costo_unitario,
+        `Anulación del movimiento #${idMovimiento}${motivo ? ': ' + motivo : ''}`,
+        idMovimiento, userId ?? null
+      ]
+    );
+
+    await recordProcessTrace(connection, {
+      proceso: 'INVENTARIO',
+      subproceso: 'MOVIMIENTO_ANULACION',
+      id_usuario: userId ?? null,
+      referencia_tipo: 'MOVIMIENTO_INVENTARIO',
+      referencia_id: idMovimiento,
+      descripcion: `Movimiento #${idMovimiento} anulado`,
+      payload_json: { motivo: motivo ?? null }
+    });
+
+    return { id_movimiento_reversion: result.insertId, message: 'Movimiento anulado correctamente' };
+  });
 }
 
 export async function listRecentBarcodeScans(limit = 12) {

@@ -74,6 +74,14 @@ export async function listTraslados(filters = {}) {
     conditions.push('t.id_almacen_origen = ?');
     params.push(filters.id_almacen_origen);
   }
+  // Historial de una bodega: a diferencia de id_almacen_origen/destino (un
+  // filtro exacto para saber "qué me falta recibir"), esto trae TODO lo que
+  // pasó por esa bodega sin importar si fue emisora o receptora — necesario
+  // para la pestaña Historial de Traslados.
+  if (filters.id_almacen) {
+    conditions.push('(t.id_almacen_origen = ? OR t.id_almacen_destino = ?)');
+    params.push(filters.id_almacen, filters.id_almacen);
+  }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 

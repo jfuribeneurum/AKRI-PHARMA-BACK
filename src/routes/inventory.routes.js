@@ -7,6 +7,8 @@ import {
   listStock,
   createMovement,
   getInventoryLookups,
+  listMovementHistory,
+  anularMovimiento,
   listRecentBarcodeScans,
   resolveBarcode,
   resolveBarcodeForLegacyLookup,
@@ -16,6 +18,7 @@ import {
   getInventoryBySite,
   getStockByProductId
 } from '../services/inventory.service.js';
+import { listWarehousesForOwnCity, listWarehousesForPO, getSedeGroupIdsForUser } from '../services/purchase.service.js';
 
 const movementSchema = z.object({
   tipo: z.enum([
@@ -86,7 +89,25 @@ inventoryRouter.get(
   '/lookups',
   authRequired,
   asyncHandler(async (req, res) => {
-    const data = await getInventoryLookups(req.user.id_sede ?? null);
+    // scope=propia: ubicaciones de las bodegas principales de TODA la ciudad
+    // de la sede activa (mismo agrupamiento que /purchases/warehouses?scope=propia,
+    // usado por "Bodega destino" en Movimiento de Entrada), no solo la sede
+    // literal — ver getInventoryLookups.
+    // scope=gestion: mismo problema pero para pantallas de gestión general
+    // (Traslados: "Bodega receptora") donde /purchases/warehouses (sin
+    // scope=propia) usa getSedeGroupIdsForUser — que para ADMINISTRADOR NO
+    // se limita a la ciudad activa, sino a las 4 sedes. Sin este scope, un
+    // admin podía elegir como receptora una bodega de otra ciudad cuya
+    // ubicación nunca se había resuelto, y "enviar" fallaba con "la bodega
+    // receptora no tiene ubicaciones configuradas" aunque sí las tenga.
+    let almacenIds = null;
+    if (req.query.scope === 'propia') {
+      almacenIds = (await listWarehousesForOwnCity(req.user.id_sede ?? null)).map((a) => a.id_almacen);
+    } else if (req.query.scope === 'gestion') {
+      const groupIds = await getSedeGroupIdsForUser(req.user);
+      almacenIds = (await listWarehousesForPO(groupIds)).map((a) => a.id_almacen);
+    }
+    const data = await getInventoryLookups(req.user.id_sede ?? null, almacenIds);
     res.json({ success: true, data });
   })
 );
@@ -206,5 +227,30 @@ inventoryRouter.post(
   asyncHandler(async (req, res) => {
     const data = await createMovement(req.body, req.user.sub);
     res.status(201).json({ success: true, data });
+  })
+);
+
+inventoryRouter.get(
+  '/movements/history',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const direction = req.query.direction === 'salida' ? 'salida' : 'entrada';
+    const almacenIds = (await listWarehousesForOwnCity(req.user.id_sede ?? null)).map((a) => a.id_almacen);
+    const data = await listMovementHistory({ almacenIds, direction, limit: req.query.limit });
+    res.json({ success: true, data });
+  })
+);
+
+const anularMovimientoSchema = z.object({
+  motivo: z.string().max(255).optional().nullable()
+});
+
+inventoryRouter.post(
+  '/movements/:id/anular',
+  authRequired,
+  validate(anularMovimientoSchema),
+  asyncHandler(async (req, res) => {
+    const data = await anularMovimiento(Number(req.params.id), req.user.sub, req.body.motivo ?? null);
+    res.json({ success: true, data });
   })
 );

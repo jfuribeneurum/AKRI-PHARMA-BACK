@@ -38,7 +38,8 @@ trasladosRouter.get(
     const data = await listTraslados({
       estado:              req.query.estado ? String(req.query.estado) : undefined,
       id_almacen_destino:  req.query.id_almacen_destino ? Number(req.query.id_almacen_destino) : undefined,
-      id_almacen_origen:   req.query.id_almacen_origen  ? Number(req.query.id_almacen_origen)  : undefined
+      id_almacen_origen:   req.query.id_almacen_origen  ? Number(req.query.id_almacen_origen)  : undefined,
+      id_almacen:          req.query.id_almacen ? Number(req.query.id_almacen) : undefined
     });
     res.json({ success: true, data });
   })

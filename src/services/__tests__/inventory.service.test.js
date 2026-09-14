@@ -16,7 +16,7 @@ vi.mock('../traceability.service.js', () => ({
 
 const { query, withTransaction } = await import('../../config/db.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
-const { listStock, getInventoryLookups, getStockByProductId, registerBarcodeIngress, registerBarcodeEgress } = await import('../inventory.service.js');
+const { listStock, getInventoryLookups, getStockByProductId, registerBarcodeIngress, registerBarcodeEgress, listMovementHistory, anularMovimiento } = await import('../inventory.service.js');
 
 // Router genérico para connection.execute, mismo patrón que dispensacion-hs
 // y sale.service.test.js: {patrón: () => filas}, el resto de INSERT/UPDATE
@@ -113,6 +113,167 @@ describe('inventory.service warehouse scoping', () => {
     const result = await getStockByProductId([], 1);
     expect(result).toEqual([]);
     expect(query).not.toHaveBeenCalled();
+  });
+
+  it('getInventoryLookups scopes ubicaciones by almacenIds (IN) instead of id_sede when given, for the Bodega destino city group', async () => {
+    await getInventoryLookups(3, [1, 6]);
+    const [ubicacionesSql, ubicacionesParams] = query.mock.calls[1];
+    expect(ubicacionesSql).toMatch(/u\.id_almacen IN \(\?,\?\)/);
+    expect(ubicacionesParams).toEqual([1, 6]);
+  });
+
+  it('getInventoryLookups falls back to id_sede scoping for ubicaciones when almacenIds is empty/omitted', async () => {
+    await getInventoryLookups(3);
+    const [ubicacionesSql, ubicacionesParams] = query.mock.calls[1];
+    expect(ubicacionesSql).toMatch(/a\.id_sede = \?/);
+    expect(ubicacionesParams).toEqual([3, 3]);
+  });
+});
+
+describe('inventory.service listMovementHistory', () => {
+  beforeEach(() => {
+    query.mockReset();
+    query.mockResolvedValue([]);
+  });
+
+  it('entrada: filters by id_almacen_destino IN (...) with id_almacen_origen IS NULL (excludes traslados)', async () => {
+    await listMovementHistory({ almacenIds: [1, 6], direction: 'entrada', limit: 20 });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/m\.id_almacen_destino IN \(\?,\?\)/);
+    expect(sql).toMatch(/m\.id_almacen_origen IS NULL/);
+    expect(params).toEqual([1, 6]);
+  });
+
+  it('salida: filters by id_almacen_origen IN (...) with id_almacen_destino IS NULL', async () => {
+    await listMovementHistory({ almacenIds: [6], direction: 'salida', limit: 20 });
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/m\.id_almacen_origen IN \(\?\)/);
+    expect(sql).toMatch(/m\.id_almacen_destino IS NULL/);
+    expect(params).toEqual([6]);
+  });
+
+  it('returns an empty list without querying when almacenIds is empty', async () => {
+    const result = await listMovementHistory({ almacenIds: [], direction: 'entrada' });
+    expect(result).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('clamps limit to a safe maximum instead of trusting the caller', async () => {
+    await listMovementHistory({ almacenIds: [1], direction: 'entrada', limit: 999999 });
+    const [sql] = query.mock.calls[0];
+    expect(sql).toMatch(/LIMIT 200/);
+  });
+});
+
+// anularMovimiento sigue el mismo patrón que /ingresos/:id/anular: no borra
+// la fila (ledger append-only), revierte exactamente el stock que el
+// movimiento original movió e inserta un ajuste que lo referencia.
+describe('inventory.service anularMovimiento', () => {
+  beforeEach(() => {
+    withTransaction.mockClear();
+    mockConnection.execute.mockReset();
+    recordProcessTrace.mockReset();
+  });
+
+  it('reverses an entrada: decrements existencia at the destino and inserts a reversal shaped as a salida', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento = \?/, () => [[{
+        id_movimiento: 7217, id_producto: 44, id_lote: 798,
+        id_almacen_origen: null, id_ubicacion_origen: null,
+        id_almacen_destino: 1, id_ubicacion_destino: 1,
+        cantidad: 1, costo_unitario: 0
+      }]]],
+      [/referencia_tipo = 'ANULACION_MOVIMIENTO'/, () => [[]]],
+      [/FROM existencias/, () => [[{ id_existencia: 900 }]]],
+      [/INSERT INTO movimientos_inventario/, () => [{ insertId: 8000 }]]
+    ]);
+
+    const result = await anularMovimiento(7217, 9, 'registro de prueba');
+
+    expect(result).toEqual({ id_movimiento_reversion: 8000, message: 'Movimiento anulado correctamente' });
+
+    const updateCall = mockConnection.execute.mock.calls.find(([sql]) => /^UPDATE existencias/.test(sql));
+    expect(updateCall[0]).toMatch(/GREATEST\(0, cantidad_disponible - \?\)/);
+    expect(updateCall[1]).toEqual([1, 900]);
+
+    const insertCall = mockConnection.execute.mock.calls.find(([sql]) => /^INSERT INTO movimientos_inventario/.test(sql));
+    // Reversión de una entrada (solo tenía destino) queda con forma de salida (solo origen).
+    expect(insertCall[1]).toEqual([
+      44, 798,
+      1, 1, null, null,
+      1, 0,
+      'Anulación del movimiento #7217: registro de prueba',
+      7217, 9
+    ]);
+
+    expect(recordProcessTrace).toHaveBeenCalledTimes(1);
+  });
+
+  it('reverses a salida: increments existencia at the origen (no GREATEST cap)', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento = \?/, () => [[{
+        id_movimiento: 50, id_producto: 5, id_lote: 10,
+        id_almacen_origen: 6, id_ubicacion_origen: 7,
+        id_almacen_destino: null, id_ubicacion_destino: null,
+        cantidad: 3, costo_unitario: 50
+      }]]],
+      [/referencia_tipo = 'ANULACION_MOVIMIENTO'/, () => [[]]],
+      [/FROM existencias/, () => [[{ id_existencia: 901 }]]],
+      [/INSERT INTO movimientos_inventario/, () => [{ insertId: 8001 }]]
+    ]);
+
+    await anularMovimiento(50, 9);
+
+    const updateCall = mockConnection.execute.mock.calls.find(([sql]) => /^UPDATE existencias/.test(sql));
+    expect(updateCall[0]).toMatch(/cantidad_disponible \+ \?/);
+    expect(updateCall[1]).toEqual([3, 901]);
+  });
+
+  it('rejects a traslado (both origen and destino set) — anular that from Traslados instead', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento = \?/, () => [[{
+        id_movimiento: 9, id_almacen_origen: 6, id_almacen_destino: 1
+      }]]]
+    ]);
+
+    await expect(anularMovimiento(9, 9)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rejects a movement that was already anulado', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento = \?/, () => [[{
+        id_movimiento: 7217, id_almacen_origen: null, id_almacen_destino: 1
+      }]]],
+      [/referencia_tipo = 'ANULACION_MOVIMIENTO'/, () => [[{ id_movimiento: 8000 }]]]
+    ]);
+
+    await expect(anularMovimiento(7217, 9)).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rejects an unknown id_movimiento with 404', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento = \?/, () => [[]]]
+    ]);
+
+    await expect(anularMovimiento(99999, 9)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('still voids the movement (no crash) when the existencia row no longer exists', async () => {
+    routeExecute([
+      [/SELECT \* FROM movimientos_inventario WHERE id_movimiento = \?/, () => [[{
+        id_movimiento: 1, id_producto: 1, id_lote: 1,
+        id_almacen_origen: null, id_ubicacion_origen: null,
+        id_almacen_destino: 1, id_ubicacion_destino: 1,
+        cantidad: 1, costo_unitario: 0
+      }]]],
+      [/referencia_tipo = 'ANULACION_MOVIMIENTO'/, () => [[]]],
+      [/FROM existencias/, () => [[]]],
+      [/INSERT INTO movimientos_inventario/, () => [{ insertId: 2 }]]
+    ]);
+
+    const result = await anularMovimiento(1, 9);
+    expect(result.id_movimiento_reversion).toBe(2);
+    expect(mockConnection.execute.mock.calls.some(([sql]) => /^UPDATE existencias/.test(sql))).toBe(false);
   });
 });
 
