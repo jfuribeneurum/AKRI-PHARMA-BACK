@@ -21,12 +21,16 @@ import {
 import { listWarehousesForOwnCity, listWarehousesForPO, getSedeGroupIdsForUser } from '../services/purchase.service.js';
 
 const movementSchema = z.object({
-  tipo: z.enum([
-    'entrada_compra', 'salida_venta', 'ajuste', 'traslado', 'devolucion_compra',
-    'devolucion_venta', 'merma', 'cuarentena', 'liberacion', 'destruccion',
-    'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
-    'inventario_sobrante_fisico', 'bonificacion'
-  ]),
+  // Antes era un z.enum fijo. Un tipo válido en el módulo de Parámetros
+  // (tipo_movimiento_entrada/salida) pero ausente de esta lista fallaba
+  // SIEMPRE con "Validación fallida" (pasó con 'OTRO' y 'CONSUMO'), sin
+  // importar producto/cantidad/bodega, porque nadie sabía que había que
+  // sincronizar dos listas cada vez que se agregaba un tipo nuevo. Ahora
+  // solo se exige que no venga vacío — el valor real se valida
+  // dinámicamente en createMovement contra los tipos internos del sistema
+  // más los activos en parametros_sistema, así un tipo agregado en
+  // Parámetros funciona de inmediato sin tocar este archivo.
+  tipo: z.string().min(1, 'El tipo de movimiento es obligatorio'),
   id_lote: z.number().int().optional().nullable(),
   // Alternativa a id_lote cuando el lote todavía no existe (producto nunca
   // antes registrado en esta bodega, o lote nuevo de uno ya conocido) — ver

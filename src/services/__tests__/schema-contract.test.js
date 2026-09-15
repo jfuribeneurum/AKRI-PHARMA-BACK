@@ -79,21 +79,18 @@ describe('database schema contract', () => {
     expect(column?.COLUMN_TYPE ?? '').toContain("'cancelada'");
   });
 
-  it('movimientos_inventario.tipo allows every value the movementSchema/createMovement accept', async () => {
-    // POST /inventory/movements validates `tipo` with a Zod enum that already
-    // includes these 5 values (Movimiento de Salida/Entrada in the frontend),
-    // but the DB column's ENUM never did — every insert 500'd with
-    // "Data truncated for column 'tipo' at row 1".
+  it('movimientos_inventario.tipo is VARCHAR, not a fixed ENUM', async () => {
+    // Era un ENUM fijo: cada tipo de movimiento nuevo (agregado por código o
+    // por un admin en el módulo de Parámetros, como 'OTRO'/'CONSUMO')
+    // requería expandir el ENUM a mano o el INSERT truncaba. createMovement
+    // ya valida `tipo` dinámicamente contra parametros_sistema + los tipos
+    // internos del sistema, así que la columna se convirtió a VARCHAR una
+    // sola vez (ver runtime-schema.service.js) y no debería volver a un
+    // ENUM que reintroduzca ese techo fijo.
     const [column] = await query(
-      `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+      `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimientos_inventario' AND COLUMN_NAME = 'tipo'`
     );
-    const columnType = column?.COLUMN_TYPE ?? '';
-    for (const value of [
-      'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
-      'inventario_sobrante_fisico', 'bonificacion'
-    ]) {
-      expect(columnType, `movimientos_inventario.tipo is missing enum value '${value}'`).toContain(`'${value}'`);
-    }
+    expect(column?.DATA_TYPE).toBe('varchar');
   });
 });

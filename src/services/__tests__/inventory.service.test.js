@@ -16,7 +16,7 @@ vi.mock('../traceability.service.js', () => ({
 
 const { query, withTransaction } = await import('../../config/db.js');
 const { recordProcessTrace } = await import('../traceability.service.js');
-const { listStock, getInventoryLookups, getStockByProductId, registerBarcodeIngress, registerBarcodeEgress, listMovementHistory, anularMovimiento } = await import('../inventory.service.js');
+const { listStock, getInventoryLookups, getStockByProductId, registerBarcodeIngress, registerBarcodeEgress, listMovementHistory, anularMovimiento, createMovement } = await import('../inventory.service.js');
 
 // Router genérico para connection.execute, mismo patrón que dispensacion-hs
 // y sale.service.test.js: {patrón: () => filas}, el resto de INSERT/UPDATE
@@ -274,6 +274,113 @@ describe('inventory.service anularMovimiento', () => {
     const result = await anularMovimiento(1, 9);
     expect(result.id_movimiento_reversion).toBe(2);
     expect(mockConnection.execute.mock.calls.some(([sql]) => /^UPDATE existencias/.test(sql))).toBe(false);
+  });
+});
+
+// BUG REAL: createMovement decidía si debitaba/acreditaba stock consultando
+// si `tipo` estaba en dos arrays hardcodeados (debitOriginTypes/
+// creditDestinationTypes), Y la ruta validaba `tipo` con un z.enum fijo
+// aparte. Un tipo nuevo agregado desde el módulo de Parámetros (ej. 'OTRO',
+// 'CONSUMO') no estaba en NINGUNA de las dos listas: el registro fallaba en
+// la validación, y aunque se hubiera colado, tampoco habría movido stock.
+// Ahora: `tipo` se valida dinámicamente (tipos internos del sistema +
+// activos en parametros_sistema) y la dirección del movimiento depende solo
+// de qué ubicaciones trae el payload — así un tipo nuevo funciona de
+// inmediato sin tocar código.
+describe('inventory.service createMovement — tipo dinámico y dirección por ubicación', () => {
+  beforeEach(() => {
+    withTransaction.mockClear();
+    mockConnection.execute.mockReset();
+    recordProcessTrace.mockReset();
+  });
+
+  const loteRow = { id_lote: 10, id_producto: 5, costo_unitario: 100 };
+
+  it('rechaza un tipo que no es interno del sistema ni está activo en Parámetros', async () => {
+    routeExecute([
+      [/FROM lotes l/, () => [[loteRow]]],
+      [/FROM parametros_sistema/, () => [[]]]
+    ]);
+
+    await expect(createMovement(
+      { tipo: 'TIPO_INVENTADO', id_lote: 10, id_ubicacion_destino: 1, cantidad: 1 },
+      9
+    )).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('acepta un tipo interno del sistema (entrada_compra) aunque Parámetros no tenga nada activo', async () => {
+    routeExecute([
+      [/FROM lotes l/, () => [[loteRow]]],
+      [/FROM parametros_sistema/, () => [[]]],
+      [/FROM existencias WHERE id_lote = \? AND id_ubicacion = \?/, () => [[]]],
+      [/FROM ubicaciones_almacen WHERE id_ubicacion/, () => [[{ id_almacen: 6 }]]],
+      [/INSERT INTO movimientos_inventario/, () => [{ insertId: 500 }]]
+    ]);
+
+    const result = await createMovement(
+      { tipo: 'entrada_compra', id_lote: 10, id_ubicacion_destino: 1, cantidad: 5 },
+      9
+    );
+    expect(result.id_movimiento).toBe(500);
+  });
+
+  it('acepta un tipo NUEVO activo en Parámetros (ej. OTRO) — el caso real que fallaba', async () => {
+    routeExecute([
+      [/FROM lotes l/, () => [[loteRow]]],
+      [/FROM parametros_sistema/, () => [[{ valor: 'OTRO' }]]],
+      [/FROM existencias WHERE id_lote = \? AND id_ubicacion = \?/, () => [[]]],
+      [/FROM ubicaciones_almacen WHERE id_ubicacion/, () => [[{ id_almacen: 6 }]]],
+      [/INSERT INTO movimientos_inventario/, () => [{ insertId: 501 }]]
+    ]);
+
+    const result = await createMovement(
+      { tipo: 'OTRO', id_lote: 10, id_ubicacion_destino: 1, cantidad: 5 },
+      9
+    );
+    expect(result.id_movimiento).toBe(501);
+  });
+
+  it('debita stock cuando viene id_ubicacion_origen, sin importar el tipo (aquí uno recién agregado en Parámetros: CONSUMO)', async () => {
+    routeExecute([
+      [/FROM lotes l/, () => [[loteRow]]],
+      [/FROM parametros_sistema/, () => [[{ valor: 'CONSUMO' }]]],
+      [/FROM existencias WHERE id_lote = \? AND id_ubicacion = \?/, () => [[{ id_existencia: 900, cantidad_disponible: 10 }]]],
+      [/INSERT INTO movimientos_inventario/, () => [{ insertId: 502 }]]
+    ]);
+
+    await createMovement(
+      { tipo: 'CONSUMO', id_lote: 10, id_ubicacion_origen: 7, cantidad: 3 },
+      9
+    );
+
+    const updateCall = mockConnection.execute.mock.calls.find(([sql]) => /^UPDATE existencias/.test(sql));
+    expect(updateCall[0]).toMatch(/cantidad_disponible - \?/);
+    expect(updateCall[1]).toEqual([3, 900]);
+  });
+
+  it('rechaza cuando no se indica ni origen ni destino (movimiento que no movería nada)', async () => {
+    routeExecute([
+      [/FROM lotes l/, () => [[loteRow]]],
+      [/FROM parametros_sistema/, () => [[]]]
+    ]);
+
+    await expect(createMovement(
+      { tipo: 'entrada_compra', id_lote: 10, cantidad: 1 },
+      9
+    )).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rechaza el débito cuando no existe saldo para el lote/ubicación de origen', async () => {
+    routeExecute([
+      [/FROM lotes l/, () => [[loteRow]]],
+      [/FROM parametros_sistema/, () => [[]]],
+      [/FROM existencias WHERE id_lote = \? AND id_ubicacion = \?/, () => [[]]]
+    ]);
+
+    await expect(createMovement(
+      { tipo: 'merma', id_lote: 10, id_ubicacion_origen: 7, cantidad: 1 },
+      9
+    )).rejects.toMatchObject({ status: 400 });
   });
 });
 

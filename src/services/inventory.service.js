@@ -7,6 +7,20 @@ function toJson(value) {
   return value ? JSON.stringify(value) : null;
 }
 
+// Tipos de movimiento que usan otros flujos del sistema (ingresos, ventas,
+// traslados, dispensación) y que NO se gestionan desde el módulo de
+// Parámetros — siempre son válidos, sin depender de configuración. Todo lo
+// demás (inventario_sobrante_fisico, bonificacion, OTRO, CONSUMO, y
+// cualquier valor futuro que alguien agregue en Parámetros) se valida
+// dinámicamente en createMovement contra parametros_sistema, así que un
+// admin puede crear un tipo nuevo ahí y usarlo de inmediato sin que nadie
+// tenga que tocar código ni la base de datos.
+const SYSTEM_MOVEMENT_TYPES = [
+  'entrada_compra', 'salida_venta', 'ajuste', 'traslado',
+  'devolucion_compra', 'devolucion_venta', 'merma', 'cuarentena',
+  'liberacion', 'destruccion'
+];
+
 async function getExistencia(connection, idLote, idUbicacion) {
   const [rows] = await connection.execute(
     `SELECT * FROM existencias WHERE id_lote = ? AND id_ubicacion = ? FOR UPDATE`,
@@ -700,16 +714,32 @@ export async function createMovement(payload, userId) {
       throw new HttpError(404, 'Lote no encontrado');
     }
 
-    const debitOriginTypes = ['salida_venta', 'merma', 'destruccion', 'cuarentena', 'traslado', 'devolucion_compra',
-      'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno'];
-    const creditDestinationTypes = ['entrada_compra', 'traslado', 'devolucion_venta', 'liberacion',
-      'inventario_sobrante_fisico', 'bonificacion'];
+    // El tipo ya no controla si se debita/acredita stock (ver más abajo) —
+    // solo se valida que sea un tipo conocido: uno de los internos del
+    // sistema, o uno activo configurado en Parámetros (tipo_movimiento_
+    // entrada/salida). Esto es lo que permite que un tipo nuevo agregado en
+    // Parámetros (como 'OTRO'/'CONSUMO', que rompían todo movimiento antes
+    // de este cambio) funcione de inmediato sin tocar código.
+    const [tipoRows] = await connection.execute(
+      `SELECT valor FROM parametros_sistema
+        WHERE activo = 1 AND grupo IN ('tipo_movimiento_entrada', 'tipo_movimiento_salida')`
+    );
+    const tiposValidos = new Set([...SYSTEM_MOVEMENT_TYPES, ...tipoRows.map((r) => r.valor)]);
+    if (!tiposValidos.has(payload.tipo)) {
+      throw new HttpError(400, `Tipo de movimiento "${payload.tipo}" no es válido.`);
+    }
 
-    if (debitOriginTypes.includes(payload.tipo)) {
-      if (!payload.id_ubicacion_origen) {
-        throw new HttpError(400, 'La ubicación de origen es obligatoria para este movimiento');
-      }
+    // La dirección del movimiento (débito/crédito) se decide por qué
+    // ubicaciones trae el payload, no por el texto de "tipo" — Movimiento de
+    // Entrada siempre manda solo destino, Movimiento de Salida (y Consumo de
+    // dispositivos, Dispensación) siempre manda solo origen, y un traslado
+    // registrado aquí manda ambos. Así cualquier tipo, existente o futuro,
+    // mueve stock correctamente sin necesitar su propia lista hardcodeada.
+    if (!payload.id_ubicacion_origen && !payload.id_ubicacion_destino) {
+      throw new HttpError(400, 'Debes indicar una ubicación de origen y/o destino para el movimiento.');
+    }
 
+    if (payload.id_ubicacion_origen) {
       const existencia = await getExistencia(connection, payload.id_lote, payload.id_ubicacion_origen);
 
       if (!existencia) {
@@ -730,7 +760,7 @@ export async function createMovement(payload, userId) {
       );
     }
 
-    if (payload.id_ubicacion_destino && creditDestinationTypes.includes(payload.tipo)) {
+    if (payload.id_ubicacion_destino) {
       const [existingRows] = await connection.execute(
         `SELECT * FROM existencias WHERE id_lote = ? AND id_ubicacion = ? FOR UPDATE`,
         [payload.id_lote, payload.id_ubicacion_destino]

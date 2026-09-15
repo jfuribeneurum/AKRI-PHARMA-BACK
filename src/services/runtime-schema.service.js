@@ -727,29 +727,21 @@ async function ensureV19PurchaseRequestSchema() {
 
   if (await tableExists('movimientos_inventario')) {
     const [tipoColumn] = await query(
-      `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+      `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'movimientos_inventario' AND COLUMN_NAME = 'tipo'`
     );
-    // El endpoint POST /inventory/movements y createMovement() ya validan y
-    // manejan débito/crédito para estos 5 tipos (Movimiento de Salida /
-    // Entrada en el frontend), pero el ENUM de la columna nunca los incluyó,
-    // así que cada insert fallaba con "Data truncated for column 'tipo'".
-    const requiredValues = [
-      'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
-      'inventario_sobrante_fisico', 'bonificacion'
-    ];
-    const missing = requiredValues.filter((value) => !tipoColumn?.COLUMN_TYPE?.includes(`'${value}'`));
-    if (missing.length) {
-      await runStatement(`
-        ALTER TABLE movimientos_inventario
-          MODIFY COLUMN tipo ENUM(
-            'entrada_compra','salida_venta','ajuste','traslado','devolucion_compra',
-            'devolucion_venta','merma','cuarentena','liberacion','destruccion',
-            'inventario_faltante_fisico','disposicion_final','movimiento_interno',
-            'inventario_sobrante_fisico','bonificacion'
-          ) NOT NULL
-      `);
-      console.log(`[schema] Valores agregados al enum tipo de movimientos_inventario: ${missing.join(', ')}`);
+    // 'tipo' era un ENUM fijo: cada tipo de movimiento nuevo (agregado desde
+    // el módulo de Parámetros, ej. 'OTRO'/'CONSUMO', o cualquiera futuro)
+    // requería que alguien tocara código para expandir el ENUM aquí y en el
+    // z.enum de inventory.routes.js — mientras tanto, cada INSERT con ese
+    // tipo fallaba. createMovement ya valida el valor dinámicamente contra
+    // parametros_sistema + los tipos internos del sistema, así que la
+    // columna no necesita restringir valores: se convierte una sola vez a
+    // VARCHAR para que un tipo nuevo en Parámetros funcione de inmediato,
+    // sin más migraciones.
+    if (tipoColumn?.DATA_TYPE === 'enum') {
+      await runStatement(`ALTER TABLE movimientos_inventario MODIFY COLUMN tipo VARCHAR(50) NOT NULL`);
+      console.log('[schema] movimientos_inventario.tipo convertido de ENUM a VARCHAR(50)');
     }
   }
 

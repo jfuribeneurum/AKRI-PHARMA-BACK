@@ -64,14 +64,9 @@ describe('runtime-schema.service source guards', () => {
     expect(source).toMatch(/ENUM\('pendiente','revisada','aprobada','rechazada','atendida','cancelada'\)/);
   });
 
-  it('ensures movimientos_inventario.tipo includes the 5 friendly movement codes the API already accepts', () => {
-    for (const value of [
-      'inventario_faltante_fisico', 'disposicion_final', 'movimiento_interno',
-      'inventario_sobrante_fisico', 'bonificacion'
-    ]) {
-      expect(source).toContain(`'${value}'`);
-    }
-    expect(source).toMatch(/MODIFY COLUMN tipo ENUM\(/);
+  it('ensures movimientos_inventario.tipo gets converted from ENUM to VARCHAR, so a new tipo added via Parámetros never needs another migration', () => {
+    expect(source).toMatch(/DATA_TYPE === 'enum'/);
+    expect(source).toMatch(/MODIFY COLUMN tipo VARCHAR\(50\) NOT NULL/);
   });
 
   it('ensures ingresos.id_almacen exists, so ingreso stock movements can resolve the active almacén instead of guessing it from free text', () => {
