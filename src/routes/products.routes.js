@@ -15,7 +15,12 @@ import {
   listProductImages,
   saveProductImage,
   listLaboratorios,
-  getNextControlCode
+  getNextControlCode,
+  backfillCodigoDciFromHs,
+  backfillFormaFarmaceuticaFromHs,
+  backfillConcentracionFromHs,
+  backfillCodigoAtcFromHs,
+  backfillUnidadMedidaFromHs
 } from '../services/product.service.js';
 
 const productSchema = z.object({
@@ -27,7 +32,16 @@ const productSchema = z.object({
   presentacion: z.number().int().optional().nullable(),
   unidad_medida: z.string().optional(),
   registro_invima: z.string().optional().nullable(),
-  cum: z.number().int({ message: 'El CUM es obligatorio' }),
+  // El CUM (Código Único de Medicamento) solo aplica a medicamentos/vacunas/
+  // controlados en la regulación INVIMA — los dispositivos médicos, insumos
+  // y reactivos se identifican por registro_invima y legítimamente no
+  // tienen CUM. ~155 productos activos (154 dispositivos/insumos/reactivos)
+  // no tienen cum, y antes esto era z.number().int() sin .nullable(): editar
+  // cualquiera de ellos (guardando el mismo payload, sin tocar el campo)
+  // fallaba con "Expected number, received null" solo por reenviar cum
+  // vacío. El requisito de "obligatorio para medicamentos" se valida en el
+  // frontend según tipo_producto (ver validateForm en maestro-mx.component.ts).
+  cum: z.number().int().optional().nullable(),
   consecutivo_cum: z.number().int().optional().nullable(),
   id_categoria: z.number().int().optional().nullable(),
   id_forma: z.number().int().optional().nullable(),
@@ -35,7 +49,11 @@ const productSchema = z.object({
   codigo_dci: z.number().int().optional().nullable(),
   id_laboratorio: z.number().int({ message: 'El laboratorio es obligatorio' }),
   clasificacion: z.string().optional().nullable(),
-  tipo_producto: z.enum(['medicamento', 'insumo', 'controlado', 'vacuna', 'dispositivo', 'otro']).optional(),
+  // No es un enum fijo: tipo_producto se gestiona desde Parámetros (grupo
+  // 'tipo_producto') — product.service.js valida el valor dinámicamente
+  // contra parametros_sistema (assertTipoProductoValido), igual que
+  // inventory.service.js valida los tipos de movimiento.
+  tipo_producto: z.string().min(1).optional(),
   mx_control: z.boolean().optional(),
   requiere_cadena_frio: z.boolean().optional(),
   temp_min: z.number().optional().nullable(),
@@ -84,6 +102,68 @@ productsRouter.get(
   })
 );
 
+
+// POST /products/backfill-codigo-dci — completa codigo_dci en productos ya
+// creados y enlazados a HealthSphere que quedaron sin ese dato (creados
+// antes de que Maestro MX empezara a traerlo desde HS). Idempotente: solo
+// toca productos con codigo_dci IS NULL, se puede correr varias veces sin
+// riesgo. Acción puntual de mantenimiento de datos, no un flujo del día a día.
+productsRouter.post(
+  '/backfill-codigo-dci',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await backfillCodigoDciFromHs(req.user?.sub ?? null);
+    res.json({ success: true, data });
+  })
+);
+
+// POST /products/backfill-forma-farmaceutica — completa id_forma en
+// productos ya creados y enlazados a HealthSphere que quedaron sin ese dato,
+// causando el bloqueo "no tiene forma farmacéutica en HealthSphere" al
+// editarlos aunque HS sí la tenga. Idempotente: solo toca id_forma IS NULL.
+productsRouter.post(
+  '/backfill-forma-farmaceutica',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await backfillFormaFarmaceuticaFromHs(req.user?.sub ?? null);
+    res.json({ success: true, data });
+  })
+);
+
+// POST /products/backfill-concentracion — completa concentracion en
+// productos ya creados y enlazados a HealthSphere que quedaron sin ese
+// dato, aunque HS sí lo tenga. Idempotente: solo toca concentracion vacía.
+productsRouter.post(
+  '/backfill-concentracion',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await backfillConcentracionFromHs(req.user?.sub ?? null);
+    res.json({ success: true, data });
+  })
+);
+
+// POST /products/backfill-codigo-atc — completa codigo_atc en productos ya
+// creados y enlazados a HealthSphere que quedaron sin ese dato.
+productsRouter.post(
+  '/backfill-codigo-atc',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await backfillCodigoAtcFromHs(req.user?.sub ?? null);
+    res.json({ success: true, data });
+  })
+);
+
+// POST /products/backfill-unidad-medida — corrige unidad_medida en
+// productos ya creados y enlazados a HealthSphere que quedaron con el
+// genérico "UND" en vez de la unidad real de HS (AMPOLLA, VIAL, TABLETA...).
+productsRouter.post(
+  '/backfill-unidad-medida',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await backfillUnidadMedidaFromHs(req.user?.sub ?? null);
+    res.json({ success: true, data });
+  })
+);
 
 productsRouter.get(
   '/next-control-code',

@@ -350,6 +350,402 @@ async function saveTrace({ proceso, subproceso, estado = 'terminado', idUsuario 
   } catch { /* trazabilidad es no-crítica */ }
 }
 
+// Completa codigo_dci para productos ya creados y enlazados a HealthSphere
+// (id_medicamento_hs) que quedaron sin ese campo — la mayoría porque se
+// crearon antes de que Maestro MX empezara a traerlo desde HS. Usa el mismo
+// criterio que ya usa el buscador de medicamentos HS (MIN(dci) cuando un
+// medicamento combinado tiene más de un dci) para quedar consistente con lo
+// que se ve al buscar. Es idempotente: solo toca productos con
+// codigo_dci IS NULL, así que puede volver a correrse sin riesgo.
+export async function backfillCodigoDciFromHs(userId = null) {
+  const candidates = await query(
+    `SELECT id_producto, id_medicamento_hs, sku, nombre_comercial
+       FROM productos
+      WHERE activo = TRUE AND id_medicamento_hs IS NOT NULL AND codigo_dci IS NULL`
+  );
+  if (!candidates.length) {
+    return { candidatos: 0, actualizados: 0, muestra: [] };
+  }
+
+  let connection;
+  let dciByMed = new Map();
+  try {
+    connection = await hsPool.getConnection();
+    const ids = [...new Set(candidates.map((c) => c.id_medicamento_hs))];
+    const placeholders = ids.map(() => '?').join(',');
+    const [dciRows] = await connection.query(
+      `SELECT idMedicamento, MIN(dci) AS dci
+         FROM suhc_new_tbl_medicine_dci
+        WHERE idMedicamento IN (${placeholders})
+        GROUP BY idMedicamento`,
+      ids
+    );
+    dciByMed = new Map(dciRows.map((r) => [r.idMedicamento, r.dci]));
+  } finally {
+    if (connection) connection.release();
+  }
+
+  let actualizados = 0;
+  const muestra = [];
+  for (const p of candidates) {
+    const dci = dciByMed.get(p.id_medicamento_hs);
+    if (dci == null) continue;
+    await query(`UPDATE productos SET codigo_dci = ? WHERE id_producto = ?`, [dci, p.id_producto]);
+    actualizados++;
+    if (muestra.length < 10) {
+      muestra.push({ id_producto: p.id_producto, sku: p.sku, nombre_comercial: p.nombre_comercial, codigo_dci: dci });
+    }
+  }
+
+  await saveTrace({
+    proceso: 'maestro_mx', subproceso: 'backfill_codigo_dci', estado: 'terminado',
+    idUsuario: userId, referenciaTipo: 'producto',
+    descripcion: `Backfill de codigo_dci: ${actualizados} de ${candidates.length} productos actualizados`,
+    payload: { candidatos: candidates.length, actualizados }
+  });
+
+  return { candidatos: candidates.length, actualizados, muestra };
+}
+
+// Completa concentracion para productos ya creados y enlazados a
+// HealthSphere que quedaron sin ese campo — mismo patrón que
+// backfillCodigoDciFromHs: se crearon antes de que Maestro MX empezara a
+// traer este dato desde HS al vincular el medicamento. Copia directa
+// (concentracion es texto libre en ambos lados, sin necesidad de match).
+// Idempotente: solo toca productos con concentracion vacía/NULL.
+export async function backfillConcentracionFromHs(userId = null) {
+  const candidates = await query(
+    `SELECT id_producto, id_medicamento_hs, sku, nombre_comercial
+       FROM productos
+      WHERE activo = TRUE AND id_medicamento_hs IS NOT NULL
+        AND (concentracion IS NULL OR TRIM(concentracion) = '')`
+  );
+  if (!candidates.length) {
+    return { candidatos: 0, actualizados: 0, muestra: [] };
+  }
+
+  let connection;
+  let concByMed = new Map();
+  try {
+    connection = await hsPool.getConnection();
+    const ids = [...new Set(candidates.map((c) => c.id_medicamento_hs))];
+    const placeholders = ids.map(() => '?').join(',');
+    const [rows] = await connection.query(
+      `SELECT id, concentracion FROM suhc_new_tbl_medicine WHERE id IN (${placeholders})`,
+      ids
+    );
+    concByMed = new Map(rows.map((r) => [r.id, r.concentracion]));
+  } finally {
+    if (connection) connection.release();
+  }
+
+  let actualizados = 0;
+  const muestra = [];
+  for (const p of candidates) {
+    const concentracion = concByMed.get(p.id_medicamento_hs);
+    if (!concentracion || !String(concentracion).trim()) continue;
+    await query(`UPDATE productos SET concentracion = ? WHERE id_producto = ?`, [concentracion, p.id_producto]);
+    actualizados++;
+    if (muestra.length < 10) {
+      muestra.push({ id_producto: p.id_producto, sku: p.sku, nombre_comercial: p.nombre_comercial, concentracion });
+    }
+  }
+
+  await saveTrace({
+    proceso: 'maestro_mx', subproceso: 'backfill_concentracion', estado: 'terminado',
+    idUsuario: userId, referenciaTipo: 'producto',
+    descripcion: `Backfill de concentracion: ${actualizados} de ${candidates.length} productos actualizados`,
+    payload: { candidatos: candidates.length, actualizados }
+  });
+
+  return { candidatos: candidates.length, actualizados, muestra };
+}
+
+// Los códigos ATC (estándar WHO ATC/DDD) son jerárquicos por longitud:
+// 1 char = nivel 1 (ej. "N"), 3 = nivel 2 ("N02"), 4 = nivel 3 ("N02C"),
+// 5 = nivel 4 ("N02CX"), 7 = nivel 5 ("N02CX08"). clasificacion_atc.codigo_atc
+// es FK de sí mismo vía codigo_padre, así que para insertar un código hoja
+// hace falta insertar primero toda su cadena de ancestros si no existen.
+const ATC_LEVEL_BREAKPOINTS = [1, 3, 4, 5, 7];
+
+function atcAncestorChain(codigoRaw) {
+  // Se recorta antes de todo: un código con espacios (visto en datos reales
+  // de HS, ej. " A10BH01") desalinea las longitudes de nivel y hace que ni
+  // el código ni sus padres calcen con ningún quiebre.
+  const codigo = String(codigoRaw).trim();
+  const chain = [];
+  for (let i = 0; i < ATC_LEVEL_BREAKPOINTS.length; i++) {
+    const len = ATC_LEVEL_BREAKPOINTS[i];
+    if (len >= codigo.length) break;
+    chain.push({ codigo: codigo.slice(0, len), nivel: i + 1 });
+  }
+  // El código completo siempre queda como último eslabón (la hoja), aunque
+  // su longitud no calce con ningún quiebre estándar — HS trae algunos
+  // códigos que no siguen el formato WHO ATC exacto (ej. "902018", sin la
+  // letra inicial); igual deben poder guardarse para no bloquear el
+  // producto, sin bloquear el resto del backfill por un dato sucio.
+  chain.push({ codigo, nivel: Math.min(chain.length + 1, 5) });
+  return chain;
+}
+
+// Inserta en clasificacion_atc los códigos (y toda su cadena de padres) que
+// HealthSphere trae pero que no existen en el catálogo local — sin esto,
+// backfillCodigoAtcFromHs no puede guardar esos códigos por la FK. HS solo
+// da el código, no la descripción oficial WHO ATC, así que las filas nuevas
+// quedan con una descripción temporal (nombre del medicamento para el
+// código hoja, genérica para los padres intermedios) marcada explícitamente
+// como pendiente de revisar contra el estándar oficial — a petición del
+// usuario, para no dejar el campo NOT NULL vacío ni bloquear el backfill.
+async function ensureClasificacionAtcEntries(codigosConNombre) {
+  const existentes = new Set((await query(`SELECT codigo_atc FROM clasificacion_atc`)).map((r) => r.codigo_atc));
+
+  const porInsertar = new Map(); // codigo -> { nivel, codigo_padre, nombreMedicamento? }
+  for (const [codigo, nombreMedicamento] of codigosConNombre) {
+    const chain = atcAncestorChain(codigo);
+    for (let i = 0; i < chain.length; i++) {
+      const { codigo: c, nivel } = chain[i];
+      if (existentes.has(c) || porInsertar.has(c)) continue;
+      const codigoPadre = i > 0 ? chain[i - 1].codigo : null;
+      const esHoja = c === codigo;
+      porInsertar.set(c, { nivel, codigo_padre: codigoPadre, nombreMedicamento: esHoja ? nombreMedicamento : null });
+    }
+  }
+
+  let insertados = 0;
+  // Se inserta ordenado por nivel para que el padre siempre exista antes que el hijo (FK codigo_padre).
+  const ordenados = [...porInsertar.entries()].sort((a, b) => a[1].nivel - b[1].nivel);
+  for (const [codigo, { nivel, codigo_padre, nombreMedicamento }] of ordenados) {
+    const descripcion = nombreMedicamento
+      ? `${nombreMedicamento} (código ATC traído de HealthSphere, pendiente de revisar contra el estándar WHO ATC oficial)`
+      : `Clasificación ATC nivel ${nivel} — ${codigo} (generado automáticamente desde HealthSphere, pendiente de revisar contra el estándar WHO ATC oficial)`;
+    await query(
+      `INSERT IGNORE INTO clasificacion_atc (codigo_atc, nivel, descripcion_en, descripcion_es, codigo_padre) VALUES (?, ?, ?, ?, ?)`,
+      [codigo, nivel, descripcion, descripcion, codigo_padre]
+    );
+    insertados++;
+  }
+  return insertados;
+}
+
+// Completa codigo_atc para productos ya creados y enlazados a HealthSphere
+// que quedaron sin ese campo — mismo patrón que backfillConcentracionFromHs.
+// A diferencia de los demás, productos.codigo_atc tiene un FK contra
+// clasificacion_atc: varios códigos ATC que trae HS no existían en ese
+// catálogo local (catálogo desactualizado/incompleto), así que primero se
+// completa la jerarquía faltante (ensureClasificacionAtcEntries) y luego se
+// aplica el backfill. Idempotente: solo toca codigo_atc vacío/NULL, y el
+// insert al catálogo usa INSERT IGNORE.
+export async function backfillCodigoAtcFromHs(userId = null) {
+  const candidates = await query(
+    `SELECT id_producto, id_medicamento_hs, sku, nombre_comercial
+       FROM productos
+      WHERE activo = TRUE AND id_medicamento_hs IS NOT NULL
+        AND (codigo_atc IS NULL OR TRIM(codigo_atc) = '')`
+  );
+  if (!candidates.length) {
+    return { candidatos: 0, actualizados: 0, catalogo_atc_completado: 0, muestra: [] };
+  }
+
+  let connection;
+  let atcByMed = new Map();
+  let nombreByMed = new Map();
+  try {
+    connection = await hsPool.getConnection();
+    const ids = [...new Set(candidates.map((c) => c.id_medicamento_hs))];
+    const placeholders = ids.map(() => '?').join(',');
+    const [rows] = await connection.query(
+      `SELECT id, ATC, medicamento FROM suhc_new_tbl_medicine WHERE id IN (${placeholders})`,
+      ids
+    );
+    atcByMed = new Map(rows.map((r) => [r.id, r.ATC ? String(r.ATC).trim() : r.ATC]));
+    nombreByMed = new Map(rows.map((r) => [r.id, r.medicamento]));
+  } finally {
+    if (connection) connection.release();
+  }
+
+  const codigosConNombre = [];
+  for (const p of candidates) {
+    const codigo = atcByMed.get(p.id_medicamento_hs);
+    if (codigo && String(codigo).trim()) {
+      codigosConNombre.push([codigo, nombreByMed.get(p.id_medicamento_hs) ?? p.nombre_comercial]);
+    }
+  }
+  const catalogoAtcCompletado = await ensureClasificacionAtcEntries(codigosConNombre);
+
+  const catalogoValido = new Set((await query(`SELECT codigo_atc FROM clasificacion_atc`)).map((r) => r.codigo_atc));
+
+  let actualizados = 0;
+  const muestra = [];
+  for (const p of candidates) {
+    const codigoAtc = atcByMed.get(p.id_medicamento_hs);
+    if (!codigoAtc || !String(codigoAtc).trim() || !catalogoValido.has(codigoAtc)) continue;
+    await query(`UPDATE productos SET codigo_atc = ? WHERE id_producto = ?`, [codigoAtc, p.id_producto]);
+    actualizados++;
+    if (muestra.length < 10) {
+      muestra.push({ id_producto: p.id_producto, sku: p.sku, nombre_comercial: p.nombre_comercial, codigo_atc: codigoAtc });
+    }
+  }
+
+  await saveTrace({
+    proceso: 'maestro_mx', subproceso: 'backfill_codigo_atc', estado: 'terminado',
+    idUsuario: userId, referenciaTipo: 'producto',
+    descripcion: `Backfill de codigo_atc: ${actualizados} de ${candidates.length} productos actualizados (${catalogoAtcCompletado} filas nuevas en clasificacion_atc)`,
+    payload: { candidatos: candidates.length, actualizados, catalogoAtcCompletado }
+  });
+
+  return { candidatos: candidates.length, actualizados, catalogo_atc_completado: catalogoAtcCompletado, muestra };
+}
+
+// Completa unidad_medida para productos ya creados y enlazados a
+// HealthSphere que quedaron con el genérico "UND" (el valor por defecto de
+// createProduct/updateProduct cuando no se indica ninguno) en vez de la
+// unidad real de HS (AMPOLLA, VIAL, TABLETA, etc.). A diferencia de los
+// demás campos de este grupo, acá el problema no es un NULL sino un valor
+// incorrecto por defecto, así que también se sobreescribe cuando es 'UND'
+// y HS trae algo distinto y real.
+export async function backfillUnidadMedidaFromHs(userId = null) {
+  const candidates = await query(
+    `SELECT id_producto, id_medicamento_hs, sku, nombre_comercial, unidad_medida
+       FROM productos
+      WHERE activo = TRUE AND id_medicamento_hs IS NOT NULL
+        AND (unidad_medida IS NULL OR TRIM(unidad_medida) = '' OR unidad_medida = 'UND')`
+  );
+  if (!candidates.length) {
+    return { candidatos: 0, actualizados: 0, muestra: [] };
+  }
+
+  let connection;
+  let unidadByMed = new Map();
+  try {
+    connection = await hsPool.getConnection();
+    const ids = [...new Set(candidates.map((c) => c.id_medicamento_hs))];
+    const placeholders = ids.map(() => '?').join(',');
+    const [rows] = await connection.query(
+      `SELECT m.id, u.descripcion AS unidad
+         FROM suhc_new_tbl_medicine m
+         LEFT JOIN suhc_new_tbl_maestrasdetalle u ON u.id = m.idUnidadDosificacion
+        WHERE m.id IN (${placeholders})`,
+      ids
+    );
+    unidadByMed = new Map(rows.map((r) => [r.id, r.unidad]));
+  } finally {
+    if (connection) connection.release();
+  }
+
+  let actualizados = 0;
+  const muestra = [];
+  for (const p of candidates) {
+    const hsUnidad = unidadByMed.get(p.id_medicamento_hs);
+    if (!hsUnidad || !String(hsUnidad).trim()) continue;
+    if (hsUnidad.trim().toUpperCase() === (p.unidad_medida || '').trim().toUpperCase()) continue;
+    await query(`UPDATE productos SET unidad_medida = ? WHERE id_producto = ?`, [hsUnidad, p.id_producto]);
+    actualizados++;
+    if (muestra.length < 10) {
+      muestra.push({ id_producto: p.id_producto, sku: p.sku, nombre_comercial: p.nombre_comercial, unidad_medida_anterior: p.unidad_medida, unidad_medida: hsUnidad });
+    }
+  }
+
+  await saveTrace({
+    proceso: 'maestro_mx', subproceso: 'backfill_unidad_medida', estado: 'terminado',
+    idUsuario: userId, referenciaTipo: 'producto',
+    descripcion: `Backfill de unidad_medida: ${actualizados} de ${candidates.length} productos actualizados`,
+    payload: { candidatos: candidates.length, actualizados }
+  });
+
+  return { candidatos: candidates.length, actualizados, muestra };
+}
+
+// Misma normalización/algoritmo que matchForma() en
+// maestro-mx.component.ts (frontend), usado ahí cuando se enlaza un
+// medicamento de HS nuevo: coincidencia exacta primero, si no la parcial
+// más cercana en longitud. Se replica acá para poder resolverla también en
+// productos ya creados, sin depender de que el usuario reabra el formulario.
+function normalizarTextoForma(s) {
+  return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+function matchForma(hsText, formas) {
+  if (!hsText) return null;
+  const hsNorm = normalizarTextoForma(hsText);
+
+  const exact = formas.find((f) => normalizarTextoForma(f.nombre) === hsNorm);
+  if (exact) return exact.id_forma;
+
+  let best = null;
+  let bestDiff = Infinity;
+  for (const f of formas) {
+    const fNorm = normalizarTextoForma(f.nombre);
+    if (hsNorm.includes(fNorm) || fNorm.includes(hsNorm)) {
+      const diff = Math.abs(fNorm.length - hsNorm.length);
+      if (diff < bestDiff) {
+        best = f;
+        bestDiff = diff;
+      }
+    }
+  }
+  return best?.id_forma ?? null;
+}
+
+// Completa id_forma para productos ya creados y enlazados a HealthSphere que
+// quedaron sin ese campo — la mayoría porque se crearon antes de que Maestro
+// MX empezara a traerlo/matchearlo desde HS al vincular el medicamento. Sin
+// esto, editar cualquiera de ellos queda bloqueado con "Este medicamento no
+// tiene forma farmacéutica en HealthSphere" aunque HS sí la tenga — el
+// mensaje solo refleja que nunca se sincronizó localmente. Idempotente:
+// solo toca productos con id_forma IS NULL.
+export async function backfillFormaFarmaceuticaFromHs(userId = null) {
+  const candidates = await query(
+    `SELECT id_producto, id_medicamento_hs, sku, nombre_comercial
+       FROM productos
+      WHERE activo = TRUE AND id_medicamento_hs IS NOT NULL AND id_forma IS NULL`
+  );
+  if (!candidates.length) {
+    return { candidatos: 0, actualizados: 0, muestra: [] };
+  }
+
+  const formas = await query(`SELECT id_forma, nombre FROM formas_farmaceuticas`);
+
+  let connection;
+  let formaTextByMed = new Map();
+  try {
+    connection = await hsPool.getConnection();
+    const ids = [...new Set(candidates.map((c) => c.id_medicamento_hs))];
+    const placeholders = ids.map(() => '?').join(',');
+    const [rows] = await connection.query(
+      `SELECT m.id, d.descripcion AS forma_desc
+         FROM suhc_new_tbl_medicine m
+         LEFT JOIN suhc_new_tbl_maestrasdetalle d ON d.id = m.idFormaFarmaceutica AND d.idMaestra = 1
+        WHERE m.id IN (${placeholders})`,
+      ids
+    );
+    formaTextByMed = new Map(rows.map((r) => [r.id, r.forma_desc]));
+  } finally {
+    if (connection) connection.release();
+  }
+
+  let actualizados = 0;
+  const muestra = [];
+  for (const p of candidates) {
+    const hsText = formaTextByMed.get(p.id_medicamento_hs);
+    const idForma = matchForma(hsText, formas);
+    if (idForma == null) continue;
+    await query(`UPDATE productos SET id_forma = ? WHERE id_producto = ?`, [idForma, p.id_producto]);
+    actualizados++;
+    if (muestra.length < 10) {
+      muestra.push({ id_producto: p.id_producto, sku: p.sku, nombre_comercial: p.nombre_comercial, forma_hs: hsText, id_forma: idForma });
+    }
+  }
+
+  await saveTrace({
+    proceso: 'maestro_mx', subproceso: 'backfill_id_forma', estado: 'terminado',
+    idUsuario: userId, referenciaTipo: 'producto',
+    descripcion: `Backfill de id_forma: ${actualizados} de ${candidates.length} productos actualizados`,
+    payload: { candidatos: candidates.length, actualizados }
+  });
+
+  return { candidatos: candidates.length, actualizados, muestra };
+}
+
 // El identificador que realmente distingue un registro sanitario de otro es
 // el CUM completo (cum + consecutivo_cum, asignado por INVIMA) — no el
 // laboratorio ni la presentación (tamaño de empaque), que se repiten
@@ -388,7 +784,26 @@ export async function getNextControlCode(sku, idLaboratorio, cum, consecutivoCum
   return { codigo_control, duplicate_cum };
 }
 
+// tipo_producto se gestiona desde Parámetros (grupo 'tipo_producto'), igual
+// que los tipos de movimiento de inventario — no es un enum fijo en código.
+// Antes sí lo era (z.enum([...6 valores...])) y cuando alguien agregó
+// "REACTIVO DIAGNOSTICO" por Parámetros, guardar o editar cualquier
+// producto con ese tipo quedó bloqueado para siempre con "Invalid enum
+// value", el mismo bug que ya se corrigió para movimientos_inventario.tipo.
+async function assertTipoProductoValido(tipoProducto) {
+  if (!tipoProducto) return;
+  const rows = await query(
+    `SELECT valor FROM parametros_sistema WHERE grupo = 'tipo_producto' AND activo = 1`
+  );
+  const validos = new Set(rows.map((r) => String(r.valor).toLowerCase()));
+  if (!validos.has(String(tipoProducto).toLowerCase())) {
+    throw new HttpError(400, `Tipo de producto "${tipoProducto}" no es válido.`);
+  }
+}
+
 export async function createProduct(payload, userId = null) {
+  await assertTipoProductoValido(payload.tipo_producto);
+
   // Duplicado: mismo CUM completo (cum + consecutivo_cum) — el identificador
   // real que asigna INVIMA. Ver checkCumDuplicate.
   if (payload.cum != null) {
@@ -471,6 +886,8 @@ export async function createProduct(payload, userId = null) {
 export async function updateProduct(id, payload, userId = null) {
   const current = await ensureProductExists(id);
   const merged = { ...current, ...payload };
+
+  await assertTipoProductoValido(merged.tipo_producto);
 
   // Duplicado: mismo CUM completo (cum + consecutivo_cum), excluyendo el propio producto
   if (merged.cum != null) {

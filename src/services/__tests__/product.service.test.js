@@ -18,7 +18,7 @@ vi.mock('../../config/hs-db.js', () => ({
 }));
 
 const { query } = await import('../../config/db.js');
-const { listProducts, listAllProductsForPO, listProductsByLaboratorio } = await import('../product.service.js');
+const { listProducts, listAllProductsForPO, listProductsByLaboratorio, createProduct, updateProduct } = await import('../product.service.js');
 
 describe('product.service listProducts', () => {
   beforeEach(() => {
@@ -116,5 +116,55 @@ describe('product.service listAllProductsForPO / listProductsByLaboratorio', () 
     const [sql, params] = query.mock.calls[0];
     expect(sql).toMatch(/p\.id_medicamento_hs/);
     expect(params).toEqual([117]);
+  });
+});
+
+// tipo_producto se gestiona desde Parámetros (grupo 'tipo_producto'), no un
+// enum fijo en código — antes era z.enum([...6 valores fijos...]) y cuando
+// alguien agregaba un tipo nuevo por Parámetros (ej. "REACTIVO DIAGNOSTICO"),
+// crear o editar CUALQUIER producto con ese tipo quedaba bloqueado para
+// siempre con "Invalid enum value". Mismo bug ya corregido antes para
+// movimientos_inventario.tipo.
+describe('product.service tipo_producto dinámico (assertTipoProductoValido)', () => {
+  beforeEach(() => {
+    query.mockReset();
+  });
+
+  it('createProduct rechaza un tipo_producto que no existe en Parámetros, sin llegar a insertar', async () => {
+    query.mockResolvedValueOnce([{ valor: 'medicamento' }, { valor: 'dispositivo' }]);
+
+    await expect(createProduct({ tipo_producto: 'esto_no_existe', sku: 'X1', nombre_comercial: 'X' }))
+      .rejects.toThrow('Tipo de producto "esto_no_existe" no es válido.');
+
+    expect(query).toHaveBeenCalledTimes(1);
+    const [sql] = query.mock.calls[0];
+    expect(sql).toMatch(/parametros_sistema/);
+    expect(sql).toMatch(/grupo = 'tipo_producto'/);
+  });
+
+  it('createProduct acepta un tipo_producto agregado dinámicamente por Parámetros, comparando sin distinguir mayúsculas', async () => {
+    // El payload no trae cum, así que checkCumDuplicate no se llega a
+    // consultar: la siguiente query tras la validación de tipo es el
+    // INSERT. Se hace fallar con un error centinela solo para probar que
+    // el código llegó hasta ahí sin ser rechazado por assertTipoProductoValido.
+    query
+      .mockResolvedValueOnce([{ valor: 'REACTIVO DIAGNOSTICO' }]) // parametros_sistema
+      .mockRejectedValueOnce(new Error('SENTINEL_REACHED_INSERT'));
+
+    await expect(
+      createProduct({ tipo_producto: 'reactivo diagnostico', sku: 'DM999', nombre_comercial: 'PRUEBA RAPIDA' })
+    ).rejects.toThrow('SENTINEL_REACHED_INSERT');
+  });
+
+  it('updateProduct rechaza un tipo_producto inválido antes de tocar la fila', async () => {
+    query
+      .mockResolvedValueOnce([{ id_producto: 43, tipo_producto: 'dispositivo', cum: null }]) // ensureProductExists
+      .mockResolvedValueOnce([{ valor: 'medicamento' }, { valor: 'dispositivo' }]); // parametros_sistema
+
+    await expect(updateProduct(43, { tipo_producto: 'no_existe' })).rejects.toThrow(
+      'Tipo de producto "no_existe" no es válido.'
+    );
+
+    expect(query).toHaveBeenCalledTimes(2);
   });
 });
