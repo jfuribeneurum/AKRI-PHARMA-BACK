@@ -309,7 +309,6 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
       );
       const yaDispensado = Number(currentRows[0].cantidad_dispensada);
       const formulado    = Number(currentRows[0].cantidad_formulada);
-      const restante     = formulado - yaDispensado;
 
       let nuevoTotal;
       if (tieneOverride) {
@@ -320,11 +319,11 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
           );
         }
       } else {
-        if (cantidadDispensada > restante) {
-          throw new HttpError(400,
-            `Solo quedan ${restante} unidad(es) por dispensar de las ${formulado} formuladas. No se puede superar esa cantidad.`
-          );
-        }
+        // A propósito NO se limita a "restante": algunos MX vienen en
+        // unidades de entrega fijas (ej. un pen con varias dosis) y hay que
+        // poder entregar la unidad completa aunque supere lo formulado. El
+        // límite real de "cuánto sale del inventario" ya lo validó arriba
+        // la suma de lotes contra el stock disponible.
         nuevoTotal = yaDispensado + cantidadDispensada;
       }
       nuevoEstado = 'parcial';
@@ -346,11 +345,9 @@ export async function dispensarMedicamento(payload, userId, idSede = null) {
          payload.contrato ?? null, payload.regimen ?? null, idControl]
       );
     } else {
-      if (cantidadInicial > cantidadFormulada) {
-        throw new HttpError(400,
-          `No se puede dispensar ${cantidadInicial} unidades. La cantidad formulada es ${cantidadFormulada}.`
-        );
-      }
+      // Igual que en la rama de continuación: no se limita a lo formulado
+      // (unidades de entrega fijas del MX) — el stock ya se validó arriba
+      // contra los lotes elegidos.
       nuevoEstado = estado;
       const [insertResult] = await connection.execute(
         `INSERT INTO dispensacion_hs_control (

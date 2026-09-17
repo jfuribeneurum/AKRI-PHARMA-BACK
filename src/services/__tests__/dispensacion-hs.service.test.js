@@ -154,6 +154,49 @@ describe('dispensacion-hs.service dispensarMedicamento', () => {
     expect(libroCall[1]).toEqual([7, 3, 5, 10, 5, 99, 7]);
   });
 
+  it('allows dispensing more than what was formulated (unidades de entrega fijas) when the chosen lotes cover it, on the first delivery', async () => {
+    // med X está formulado por 5 (mockFormulacion), pero se entrega un pen de 10.
+    getFormulacionHSById.mockResolvedValue(mockFormulacion());
+    routeExecute([
+      [/SELECT id FROM dispensacion_hs_control/, () => [[]]],
+      [/INSERT INTO dispensacion_hs_control/, () => [{ insertId: 99 }]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 20, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0, id_sede: 3 }]]],
+      [/SELECT \* FROM dispensacion_hs_control WHERE id = \?/, () => [[{ id: 99 }]]]
+    ]);
+
+    await dispensarMedicamento(
+      { id_formulacion_hs: 1, id_med_formulacion_hs: 10, cantidad_dispensada: 10, lotes: [{ id_lote: 3, id_ubicacion: 1, cantidad: 10 }] },
+      7, 3
+    );
+
+    const insertControlCall = mockConnection.execute.mock.calls.find(([sql]) => /INSERT INTO dispensacion_hs_control/.test(sql));
+    // cantidad_formulada=5 sigue quedando registrada tal cual, pero
+    // cantidad_dispensada (10) y estado ('dispensado') reflejan lo que
+    // realmente salió del inventario, no lo topan a lo formulado.
+    expect(insertControlCall[1]).toEqual(expect.arrayContaining([5, 10, 'dispensado']));
+  });
+
+  it('allows dispensing more than what remains formulated on a follow-up delivery (segunda entrega)', async () => {
+    getFormulacionHSById.mockResolvedValue(mockFormulacion());
+    routeExecute([
+      [/SELECT id FROM dispensacion_hs_control/, () => [[{ id: 55 }]]],
+      // Ya iba en 2 de 5 formuladas (quedan 3) pero se entrega un pen de 10 de una vez.
+      [/SELECT cantidad_formulada, cantidad_dispensada FROM/, () => [[{ cantidad_formulada: 5, cantidad_dispensada: 2 }]]],
+      [/FROM existencias e/, () => [[{ id_existencia: 500, cantidad_disponible: 20, id_almacen: 1, id_producto: 7, costo_unitario: 100, es_controlado: 0, id_sede: 3 }]]],
+      [/SELECT \* FROM dispensacion_hs_control WHERE id = \?/, () => [[{ id: 55 }]]]
+    ]);
+
+    await dispensarMedicamento(
+      { id_formulacion_hs: 1, id_med_formulacion_hs: 10, cantidad_dispensada: 10, lotes: [{ id_lote: 3, id_ubicacion: 1, cantidad: 10 }] },
+      7, 3
+    );
+
+    const updateCall = mockConnection.execute.mock.calls.find(([sql]) => /UPDATE dispensacion_hs_control\s+SET cantidad_dispensada/.test(sql));
+    // nuevoTotal = 2 (ya dispensado) + 10 (esta entrega) = 12, muy por encima
+    // de las 5 formuladas, y aun así se guarda tal cual (estado 'dispensado').
+    expect(updateCall[1]).toEqual(expect.arrayContaining([12, 'dispensado']));
+  });
+
   it('rejects with no stock movement when cantidad_dispensada > 0 but no lotes were chosen', async () => {
     getFormulacionHSById.mockResolvedValue(mockFormulacion());
     routeExecute([
