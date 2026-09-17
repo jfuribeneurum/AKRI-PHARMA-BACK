@@ -142,6 +142,7 @@ export async function listStock(search = '', idAlmacen = null, tipoProducto = nu
         p.sku,
         p.codigo_barras,
         p.nombre_comercial,
+        p.principio_activo,
         p.tipo_producto,
         l.id_lote,
         l.numero_lote,
