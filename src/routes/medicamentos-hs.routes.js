@@ -58,3 +58,53 @@ medicamentosHsRouter.get(
     }
   })
 );
+
+medicamentosHsRouter.get(
+  '/:id',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, message: 'id inválido' });
+    }
+
+    let connection;
+    try {
+      connection = await hsPool.getConnection();
+
+      const [rows] = await connection.query(
+        `SELECT m.id,
+                m.codigo,
+                m.medicamento        AS nombre,
+                m.nombreComercial,
+                m.ATC                AS atc,
+                m.principioActivo,
+                m.concentracion,
+                d.descripcion        AS forma_farmaceutica,
+                u.descripcion        AS unidad_dosificacion,
+                (SELECT dci.dci
+                   FROM suhc_new_tbl_medicine_dci md
+                   JOIN suhc_new_tbl_dci dci ON dci.dci = md.dci
+                  WHERE md.idMedicamento = m.id
+                  ORDER BY md.dci
+                  LIMIT 1)          AS codigo_dci
+           FROM suhc_new_tbl_medicine m
+           LEFT JOIN suhc_new_tbl_maestrasdetalle d
+                  ON d.id = m.idFormaFarmaceutica AND d.idMaestra = 1
+           LEFT JOIN suhc_new_tbl_maestrasdetalle u
+                  ON u.id = m.idUnidadDosificacion
+          WHERE m.id = ?
+          LIMIT 1`,
+        [id]
+      );
+
+      if (!rows.length) {
+        return res.status(404).json({ success: false, message: 'Medicamento no encontrado en HealthSphere' });
+      }
+
+      res.json({ success: true, data: rows[0] });
+    } finally {
+      if (connection) connection.release();
+    }
+  })
+);
