@@ -61,6 +61,12 @@ const ingresoSchema = z.object({
   total_ingreso:        z.number().optional().nullable(),
   // Items
   items:                z.array(itemSchema).optional().default([]),
+  // Trazabilidad: códigos que difieren de lo que traía la OC original
+  // (el frontend los calcula comparando contra la fotografía inicial de la
+  // orden; solo aplica al modo "con orden de compra" — en "sin orden" todo
+  // es nuevo por definición y estos vienen vacíos).
+  productos_agregados:  z.array(z.string()).optional().default([]),
+  productos_quitados:   z.array(z.string()).optional().default([]),
   // Flag explícito para devoluciones (evita depender del prefijo de la referencia)
   es_devolucion:        z.boolean().optional().default(false),
   ingreso_original_ref: z.string().optional().nullable(),
@@ -404,6 +410,8 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
       proveedor_nombre, proveedor_nit, proveedor_contacto, proveedor_telefono, proveedor_direccion,
       total_bruto, total_descuento, subtotal_neto, total_iva, total_ingreso,
       items = [],
+      productos_agregados = [],
+      productos_quitados = [],
       es_devolucion = false,
     } = req.body;
 
@@ -485,14 +493,27 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
       }
     }
 
+    const huboCambiosVsOc = productos_agregados.length > 0 || productos_quitados.length > 0;
+    const descripcionCambios = huboCambiosVsOc
+      ? ` — difiere de la OC: ${productos_agregados.length} agregado${productos_agregados.length === 1 ? '' : 's'}, ${productos_quitados.length} quitado${productos_quitados.length === 1 ? '' : 's'}`
+      : '';
+
     await recordProcessTrace(connection, {
       proceso: 'COMPRAS',
       subproceso: esDevolucion ? 'INGRESO_DEVOLUCION' : 'INGRESO_RECEPCION',
       id_usuario: req.user?.sub ?? null,
       referencia_tipo: 'INGRESO',
       referencia_id: ingresoId,
-      descripcion: `Ingreso ${referencia} registrado (${items.length} ítem${items.length === 1 ? '' : 's'})`,
-      payload_json: { numero_orden_compra: numero_orden_compra ?? null, estado, cantidad, total_ingreso: total_ingreso ?? null }
+      descripcion: `Ingreso ${referencia} registrado (${items.length} ítem${items.length === 1 ? '' : 's'})${descripcionCambios}`,
+      payload_json: {
+        numero_orden_compra: numero_orden_compra ?? null, estado, cantidad, total_ingreso: total_ingreso ?? null,
+        // Detalle completo recibido (no solo el conteo) para que la traza
+        // quede autocontenida sin tener que ir a buscar ingresos_items.
+        items: items.map(i => ({ codigo: i.codigo ?? null, nombre: i.nombre ?? null, cantidad: i.cantidad ?? 0 })),
+        // Diferencia explícita contra lo que la OC original traía.
+        productos_agregados,
+        productos_quitados,
+      }
     });
 
     res.status(201).json({ success: true, message: 'Ingreso creado exitosamente' });
