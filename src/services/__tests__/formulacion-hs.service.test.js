@@ -23,7 +23,9 @@ const {
   agregarMedicamentoExtra,
   eliminarMedicamentoExtra,
   getExclusionYExtraCounts,
-  listFormulacionesHS
+  listFormulacionesHS,
+  getDxPorIdMedFormulacion,
+  getPrescriptorPorIdFormulacion
 } = await import('../formulacion-hs.service.js');
 
 describe('formulacion-hs.service getFormulacionHSById', () => {
@@ -433,5 +435,120 @@ describe('formulacion-hs.service listFormulacionesHS (optimización del listado 
     const [countSql] = mockHsConnection.query.mock.calls[1];
     expect(countSql).toMatch(/INNER JOIN tblpaciente p/);
     expect(result.data).toEqual([{ id_formulacion: 5, documento_paciente: '123' }]);
+  });
+});
+
+// Para el informe RIPS (archivo AM): varios campos (unidad de dosificación,
+// forma farmacéutica, unidad mínima de dispensación, temporalidad) solo
+// existen en HealthSphere. HS NO tiene catálogo para traducir
+// idFormaFarmaceutica/idUnidadCalculo a texto en algunos casos, ni para los
+// códigos de unidad de posologiaTipo/temporalidadTipo — estas pruebas fijan
+// que cuando no hay texto real, se expone un código crudo en vez de inventar
+// una traducción.
+describe('formulacion-hs.service getDxPorIdMedFormulacion', () => {
+  beforeEach(() => {
+    mockHsConnection.query.mockReset();
+  });
+
+  it('usa fm.unidadDosificacion como unidad mínima cuando el medicamento NO tiene cálculo (conCalculo=0), y resuelve forma farmacéutica desde el catálogo real', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 1, dx: 'E109-Diabetes', unidadDosificacion: 'TABLETA', posologiaTipoCantidad: 8, posologiaTipo: 0, temporalidad: 30, temporalidadTipo: 1, concentracion: '20 MG', conCalculo: 0, idUnidadCalculo: null, forma_farmaceutica: 'TABLETA RECUBIERTA', unidad_calculo: null }
+    ]]);
+
+    const result = await getDxPorIdMedFormulacion([1]);
+
+    const [sql] = mockHsConnection.query.mock.calls[0];
+    expect(sql).toContain('suhc_new_tbl_maestrasdetalle');
+    expect(sql).toContain('idMaestra = 1');
+    expect(result[1].unidad_dosificacion_hs).toBe('TABLETA');
+    expect(result[1].forma_farmaceutica_hs).toBe('TABLETA RECUBIERTA');
+    expect(result[1].unidad_minima_dispensacion).toBe('TABLETA');
+  });
+
+  it('arma la temporalidad como "cada X horas durante Y días", igual al PDF de la formulación', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 1, dx: null, unidadDosificacion: 'TABLETA', posologiaTipoCantidad: 6, posologiaTipo: 0, temporalidad: 2, temporalidadTipo: 1, concentracion: null, conCalculo: 0, idUnidadCalculo: null, forma_farmaceutica: null, unidad_calculo: null }
+    ]]);
+
+    const result = await getDxPorIdMedFormulacion([1]);
+
+    expect(result[1].temporalidad_hs).toBe('cada 6 horas durante 2 días');
+  });
+
+  it('arma la temporalidad con semanas/meses cuando posologiaTipo/temporalidadTipo lo indican', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 4, dx: null, unidadDosificacion: 'PEN', posologiaTipoCantidad: 1, posologiaTipo: 2, temporalidad: 1, temporalidadTipo: 3, concentracion: null, conCalculo: 0, idUnidadCalculo: null, forma_farmaceutica: null, unidad_calculo: null }
+    ]]);
+
+    const result = await getDxPorIdMedFormulacion([4]);
+
+    expect(result[4].temporalidad_hs).toBe('cada 1 semanas durante 1 meses');
+  });
+
+  it('resuelve la unidad de cálculo real (ej. "PEN"/"VIAL") cuando el medicamento SÍ tiene cálculo, en vez de un código crudo', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 2, dx: null, unidadDosificacion: 'AMPOLLA', posologiaTipoCantidad: 24, posologiaTipo: 0, temporalidad: 1, temporalidadTipo: 1, concentracion: '1000 UI', conCalculo: 1, idUnidadCalculo: 114, forma_farmaceutica: 'SOLUCION INYECTABLE', unidad_calculo: 'VIAL' }
+    ]]);
+
+    const result = await getDxPorIdMedFormulacion([2]);
+
+    expect(result[2].unidad_minima_dispensacion).toBe('VIAL');
+    // La unidad de dosificación normal (texto real) se sigue exponiendo
+    // aparte — la unidad de cálculo es SOLO para la unidad mínima.
+    expect(result[2].unidad_dosificacion_hs).toBe('AMPOLLA');
+  });
+
+  it('si la unidad de cálculo no resuelve en el catálogo, cae a un código crudo en vez de dejarlo vacío', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 3, dx: null, unidadDosificacion: 'AMPOLLA', posologiaTipoCantidad: 24, posologiaTipo: 0, temporalidad: 1, temporalidadTipo: 1, concentracion: '1000 UI', conCalculo: 1, idUnidadCalculo: 999, forma_farmaceutica: null, unidad_calculo: null }
+    ]]);
+
+    const result = await getDxPorIdMedFormulacion([3]);
+
+    expect(result[3].unidad_minima_dispensacion).toBe('COD-999');
+  });
+
+  it('sin ids, no consulta HealthSphere', async () => {
+    const result = await getDxPorIdMedFormulacion([]);
+    expect(mockHsConnection.query).not.toHaveBeenCalled();
+    expect(result).toEqual({});
+  });
+});
+
+// El médico prescriptor vive a nivel de FORMULACIÓN (idEspecialista →
+// suhc_new_tbl_usuario), no por cada medicamento — todos los renglones de
+// una misma fórmula comparten el mismo prescriptor.
+describe('formulacion-hs.service getPrescriptorPorIdFormulacion', () => {
+  beforeEach(() => {
+    mockHsConnection.query.mockReset();
+  });
+
+  it('resuelve tipo y número de documento del médico vía idEspecialista', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 347537, tipo_documento: '1', documento: '71717384' }
+    ]]);
+
+    const result = await getPrescriptorPorIdFormulacion([347537]);
+
+    const [sql, params] = mockHsConnection.query.mock.calls[0];
+    expect(sql).toContain('f.idEspecialista');
+    expect(params).toEqual([347537]);
+    expect(result[347537]).toEqual({ tipo_documento_medico: '1', numero_documento_medico: '71717384' });
+  });
+
+  it('formulaciones sin especialista enlazado (idEspecialista=0) quedan en null, no inventadas', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 21, tipo_documento: null, documento: null }
+    ]]);
+
+    const result = await getPrescriptorPorIdFormulacion([21]);
+
+    expect(result[21]).toEqual({ tipo_documento_medico: null, numero_documento_medico: null });
+  });
+
+  it('sin ids, no consulta HealthSphere', async () => {
+    const result = await getPrescriptorPorIdFormulacion([]);
+    expect(mockHsConnection.query).not.toHaveBeenCalled();
+    expect(result).toEqual({});
   });
 });

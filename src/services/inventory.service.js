@@ -133,7 +133,7 @@ async function getLocationById(connection, idUbicacion) {
   return rows[0] ?? null;
 }
 
-export async function listStock(search = '', idAlmacen = null, tipoProducto = null) {
+export async function listStock(search = '', idAlmacen = null, tipoProducto = null, idSede = null) {
   const wildcard = `%${search}%`;
 
   return query(
@@ -167,8 +167,9 @@ export async function listStock(search = '', idAlmacen = null, tipoProducto = nu
      WHERE (? = '' OR p.nombre_comercial LIKE ? OR p.sku LIKE ? OR p.codigo_barras LIKE ? OR l.numero_lote LIKE ?)
        AND (? IS NULL OR e.id_almacen = ?)
        AND (? IS NULL OR p.tipo_producto = ?)
+       AND (? IS NULL OR a.id_sede = ?)
      ORDER BY p.nombre_comercial, l.fecha_vencimiento ASC`,
-    [search, wildcard, wildcard, wildcard, wildcard, idAlmacen, idAlmacen, tipoProducto, tipoProducto]
+    [search, wildcard, wildcard, wildcard, wildcard, idAlmacen, idAlmacen, tipoProducto, tipoProducto, idSede, idSede]
   );
 }
 

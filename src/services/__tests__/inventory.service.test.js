@@ -42,26 +42,42 @@ describe('inventory.service warehouse scoping', () => {
     await listStock('abacavir', 10);
     const [sql, params] = query.mock.calls[0];
     expect(sql).toMatch(/e\.id_almacen = \?/);
-    expect(params.at(-4)).toBe(10);
-    expect(params.at(-3)).toBe(10);
+    expect(params.at(-6)).toBe(10);
+    expect(params.at(-5)).toBe(10);
   });
 
   it('listStock is unscoped (passes null) when no almacén is given', async () => {
     await listStock('abacavir');
     const [, params] = query.mock.calls[0];
-    expect(params.at(-4)).toBeNull();
-    expect(params.at(-3)).toBeNull();
+    expect(params.at(-6)).toBeNull();
+    expect(params.at(-5)).toBeNull();
   });
 
   it('listStock filters by tipo_producto when provided (used by Consumo de dispositivos)', async () => {
     await listStock('', 10, 'dispositivo');
     const [sql, params] = query.mock.calls[0];
     expect(sql).toMatch(/p\.tipo_producto = \?/);
-    expect(params.at(-2)).toBe('dispositivo');
-    expect(params.at(-1)).toBe('dispositivo');
+    expect(params.at(-4)).toBe('dispositivo');
+    expect(params.at(-3)).toBe('dispositivo');
   });
 
   it('listStock does not filter by tipo_producto when not given', async () => {
+    await listStock('abacavir', 10);
+    const [, params] = query.mock.calls[0];
+    expect(params.at(-4)).toBeNull();
+    expect(params.at(-3)).toBeNull();
+  });
+
+  // Informes: filtro nuevo de Sede/Bodega para el export de inventario.
+  it('listStock filters by id_sede (Maestro MX de la sede) when provided', async () => {
+    await listStock('', null, null, 5);
+    const [sql, params] = query.mock.calls[0];
+    expect(sql).toMatch(/a\.id_sede = \?/);
+    expect(params.at(-2)).toBe(5);
+    expect(params.at(-1)).toBe(5);
+  });
+
+  it('listStock is unscoped by sede (passes null) when no id_sede is given', async () => {
     await listStock('abacavir', 10);
     const [, params] = query.mock.calls[0];
     expect(params.at(-2)).toBeNull();

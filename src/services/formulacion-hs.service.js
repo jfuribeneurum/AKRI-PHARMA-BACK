@@ -509,6 +509,125 @@ export async function getExclusionYExtraCounts(idsFormulacion) {
   return result;
 }
 
+// Para el informe RIPS (archivo AM) se necesitan varios datos que solo
+// existen en HealthSphere, nunca en la base local:
+//  - dx: diagnóstico CIE-10, guardado como texto libre "CODIGO-Descripción"
+//    (ej. "E109-Diabetes mellitus insulinodependiente...") — se extrae el
+//    código tomando todo antes del primer guion.
+//  - concentracion: la de suhc_new_tbl_medicine (catálogo real de HS,
+//    enlazado por idMedicamento), NO la del Maestro local — el usuario pidió
+//    explícitamente "concentración HS", no la registrada en AkriPharmacy.
+//  - unidadDosificacion (de fm, por renglón de fórmula): HS lo guarda YA
+//    como texto legible (ej. "TABLETA", "AMPOLLA") — no hay que resolver
+//    ningún código para este.
+//  - forma farmacéutica: SÍ existe catálogo real en HS —
+//    suhc_new_tbl_maestrasdetalle, filtrado por idMaestra = 1 — el mismo
+//    que usa medicamentos-hs.routes.js para resolver este mismo campo en
+//    el buscador de "Medicamento base (HealthSphere)" del Maestro MX. Se
+//    corrige acá: ya NO se usa fm.presentacion como sustituto.
+//  - unidad mínima de dispensación: si el medicamento "tiene cálculo"
+//    (medicine.conCalculo = 1, ej. factores de coagulación/insulinas en
+//    PEN o VIAL), la unidad real es medicine.idUnidadCalculo, que TAMBIÉN
+//    resuelve contra suhc_new_tbl_maestrasdetalle (sin filtro de idMaestra
+//    — igual que hace medicamentos-hs.routes.js para "unidad dosificación").
+//    Si no tiene cálculo, se usa fm.unidadDosificacion (ya viene como texto
+//    legible por cada renglón de la fórmula).
+//  - temporalidad: el formato pedido es "cada X horas durante Y días", igual
+//    a como HS lo imprime en el PDF de la formulación. Se arma con dos pares
+//    de columnas: fm.posologiaTipoCantidad + fm.posologiaTipo (frecuencia,
+//    ej. "cada 6 horas") y fm.temporalidad + fm.temporalidadTipo (duración,
+//    ej. "durante 2 días"). HS NO tiene un catálogo para los códigos de
+//    unidad (0/1/2/3, ni en suhc_new_tbl_maestrasdetalle ni en ningún otro
+//    lado) — se infirieron cruzando cientos de registros reales contra su
+//    posología en texto (ej. SEMAGLUTIDA "aplicar 0.25mg sc cada semana" con
+//    tipo=2; BUPROPION 1 tableta/día con tipo=1 y cantidad=90 para 90 días):
+//    0=horas, 1=días, 2=semanas, 3=meses. Un código fuera de 0-3 (no debería
+//    ocurrir, no se ha visto en datos reales) se entrega crudo como
+//    "COD-<n>" en vez de inventar una unidad.
+const UNIDADES_TEMPORALES = { 0: 'horas', 1: 'días', 2: 'semanas', 3: 'meses' };
+
+function formatearUnidadTemporal(cantidad, tipo) {
+  if (cantidad == null) return null;
+  const unidad = UNIDADES_TEMPORALES[Number(tipo)] ?? `COD-${tipo}`;
+  return `${cantidad} ${unidad}`;
+}
+
+export async function getDxPorIdMedFormulacion(idsMedFormulacion) {
+  const result = {};
+  const ids = [...new Set(idsMedFormulacion.filter(Boolean))];
+  if (!ids.length) return result;
+
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await hsQuery(
+    `SELECT fm.Id, fm.dx, fm.unidadDosificacion,
+            fm.posologiaTipoCantidad, fm.posologiaTipo, fm.temporalidad, fm.temporalidadTipo,
+            med.concentracion, med.conCalculo, med.idUnidadCalculo,
+            forma.descripcion AS forma_farmaceutica,
+            unidadCalculo.descripcion AS unidad_calculo
+       FROM suhc_new_tbl_formulacion_medicamentos fm
+       LEFT JOIN suhc_new_tbl_medicine med ON med.id = fm.idMedicamento
+       LEFT JOIN suhc_new_tbl_maestrasdetalle forma
+              ON forma.id = med.idFormaFarmaceutica AND forma.idMaestra = 1
+       LEFT JOIN suhc_new_tbl_maestrasdetalle unidadCalculo
+              ON unidadCalculo.id = med.idUnidadCalculo
+      WHERE fm.Id IN (${placeholders})`,
+    ids
+  );
+  for (const r of rows) {
+    const dx = (r.dx ?? '').toString().trim();
+    const separador = dx.indexOf('-');
+    const unidadDosificacion = (r.unidadDosificacion ?? '').toString().trim() || null;
+    const unidadCalculoTexto = (r.unidad_calculo ?? '').toString().trim() || null;
+    const tieneCalculo = Number(r.conCalculo) === 1;
+
+    const frecuencia = formatearUnidadTemporal(r.posologiaTipoCantidad, r.posologiaTipo);
+    const duracion = formatearUnidadTemporal(r.temporalidad, r.temporalidadTipo);
+    const temporalidadTexto = frecuencia && duracion
+      ? `cada ${frecuencia} durante ${duracion}`
+      : (duracion ? `durante ${duracion}` : null);
+
+    result[r.Id] = {
+      dx_completo: dx || null,
+      cie10: separador > 0 ? dx.slice(0, separador).trim() : (dx || null),
+      concentracion_hs: (r.concentracion ?? '').toString().trim() || null,
+      unidad_dosificacion_hs: unidadDosificacion,
+      forma_farmaceutica_hs: (r.forma_farmaceutica ?? '').toString().trim() || null,
+      unidad_minima_dispensacion: tieneCalculo
+        ? (unidadCalculoTexto ?? (r.idUnidadCalculo != null ? `COD-${r.idUnidadCalculo}` : null))
+        : unidadDosificacion,
+      temporalidad_hs: temporalidadTexto
+    };
+  }
+  return result;
+}
+
+// El médico prescriptor vive a nivel de FORMULACIÓN (suhc_new_tbl_formulacion
+// .idEspecialista → suhc_new_tbl_usuario), no por cada medicamento — todos
+// los renglones de una misma fórmula comparten el mismo prescriptor. Cuando
+// idEspecialista = 0 (formulaciones antiguas sin especialista enlazado), no
+// hay prescriptor que resolver y el resultado queda null, no inventado.
+export async function getPrescriptorPorIdFormulacion(idsFormulacion) {
+  const result = {};
+  const ids = [...new Set(idsFormulacion.filter(Boolean))];
+  if (!ids.length) return result;
+
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await hsQuery(
+    `SELECT f.Id, u.tipo_documento, u.documento
+       FROM suhc_new_tbl_formulacion f
+       LEFT JOIN suhc_new_tbl_usuario u ON u.id = f.idEspecialista
+      WHERE f.Id IN (${placeholders})`,
+    ids
+  );
+  for (const r of rows) {
+    result[r.Id] = {
+      tipo_documento_medico: (r.tipo_documento ?? '').toString().trim() || null,
+      numero_documento_medico: (r.documento ?? '').toString().trim() || null
+    };
+  }
+  return result;
+}
+
 export async function eliminarMedicamentoExtra(idMedicamentoExtra, userId, idSede = null) {
   const [row] = await query(
     `SELECT id, id_formulacion_hs, nombre_medicamento FROM dispensacion_hs_medicamentos_extra WHERE id = ? AND activo = 1`,

@@ -12,7 +12,16 @@ import {
   createPurchasesExport,
   createSalesExport,
   createSiesaBillingExport,
-  createDispensingExport
+  createDispensingExport,
+  createEntradasExport,
+  createSalidasExport,
+  createIngresosExport,
+  createDevolucionesExport,
+  createActasExport,
+  createMaestroExport,
+  createProductMovementsExport,
+  createRipsAmExport,
+  createPendientesExport
 } from '../services/reports.service.js';
 
 export const reportsRouter = Router();
@@ -39,7 +48,8 @@ reportsRouter.get(
   asyncHandler(async (req, res) => {
     const format = String(req.query.format ?? 'json');
     const search = String(req.query.search ?? '');
-    const file = await createInventoryExport(format, search, req.user.sub);
+    const idSede = req.query.id_sede ? Number(req.query.id_sede) : null;
+    const file = await createInventoryExport(format, search, req.user.sub, idSede);
     sendFile(res, file);
   })
 );
@@ -61,7 +71,10 @@ reportsRouter.get(
   asyncHandler(async (req, res) => {
     const format = String(req.query.format ?? 'json');
     const search = String(req.query.search ?? '');
-    const file = await createPurchasesExport(format, search, req.user.sub);
+    const desde = req.query.desde ? String(req.query.desde) : null;
+    const hasta = req.query.hasta ? String(req.query.hasta) : null;
+    const idSede = req.query.id_sede ? Number(req.query.id_sede) : null;
+    const file = await createPurchasesExport(format, search, req.user.sub, { desde, hasta, idSede });
     sendFile(res, file);
   })
 );
@@ -136,13 +149,111 @@ reportsRouter.get(
 );
 
 
+function movementQueryParams(req) {
+  return {
+    search: String(req.query.search ?? ''),
+    desde: req.query.desde ? String(req.query.desde) : null,
+    hasta: req.query.hasta ? String(req.query.hasta) : null,
+    idSede: req.query.id_sede ? Number(req.query.id_sede) : null
+  };
+}
+
+reportsRouter.get(
+  '/entradas/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createEntradasExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
+reportsRouter.get(
+  '/salidas/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createSalidasExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
+reportsRouter.get(
+  '/rips-am/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createRipsAmExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
+reportsRouter.get(
+  '/pendientes/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createPendientesExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
+reportsRouter.get(
+  '/movimientos-producto/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createProductMovementsExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
+reportsRouter.get(
+  '/maestro/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createMaestroExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
+reportsRouter.get(
+  '/ingresos/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createIngresosExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
+reportsRouter.get(
+  '/devoluciones/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createDevolucionesExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
+reportsRouter.get(
+  '/actas-recepcion/export',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const format = String(req.query.format ?? 'json');
+    const file = await createActasExport(format, movementQueryParams(req), req.user.sub);
+    sendFile(res, file);
+  })
+);
+
 reportsRouter.get(
   '/dispensing/export',
   authRequired,
   asyncHandler(async (req, res) => {
     const format = String(req.query.format ?? 'json');
-    const search = String(req.query.search ?? '');
-    const file = await createDispensingExport(format, search, req.user.sub);
+    const file = await createDispensingExport(format, movementQueryParams(req), req.user.sub);
     sendFile(res, file);
   })
 );
