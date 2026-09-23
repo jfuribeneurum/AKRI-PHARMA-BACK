@@ -157,6 +157,25 @@ function escapePdfText(value) {
     .replace(/\)/g, '\\)');
 }
 
+// mysql2 devuelve las columnas DATETIME como objetos Date de JS — sin
+// formatear, `String(date)` (usado por xmlEscape al exportar) produce el
+// texto largo de Date.prototype.toString() ("Tue Sep 22 2026 23:36:20
+// GMT-0500 (hora estándar de Colombia)"). Se formatea a "DD/MM/AAAA HH:mm:ss"
+// antes de exportar. Acepta también el string que ya devuelve el driver
+// cuando la columna es DATE (no DATETIME).
+function formatFechaHora(value) {
+  if (value == null || value === '') return null;
+  const fecha = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(fecha.getTime())) return String(value);
+  const dd = String(fecha.getDate()).padStart(2, '0');
+  const mm = String(fecha.getMonth() + 1).padStart(2, '0');
+  const yyyy = fecha.getFullYear();
+  const hh = String(fecha.getHours()).padStart(2, '0');
+  const mi = String(fecha.getMinutes()).padStart(2, '0');
+  const ss = String(fecha.getSeconds()).padStart(2, '0');
+  return `${dd}/${mm}/${yyyy} ${hh}:${mi}:${ss}`;
+}
+
 function pad(value, width, align = 'left') {
   const text = asciiSafe(value);
   const trimmed = text.length > width ? `${text.slice(0, Math.max(0, width - 3))}...` : text;
@@ -3411,7 +3430,19 @@ export async function createDispensingExport(format, params = {}, userId = null)
 // filtrando solo lo realmente entregado (cantidad_dispensada > 0) — lo
 // pendiente/anulado no debe facturarse. Cuando llegue la homologación real
 // se ajustan nombres/orden de columnas sin tocar el origen de datos.
-async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idSede = null } = {}) {
+// Código de habilitación (REPS) por sede — dato fijo, a pedido explícito del
+// usuario. Medellín Hemofilia y Medellín Diabetes comparten un mismo código
+// (es la misma sede física/habilitación, con dos "sedes" internas en el
+// sistema para separar sus formulaciones).
+function codigoHabilitacionPorSede(nombreSede) {
+  const nombre = (nombreSede ?? '').toString().trim().toUpperCase();
+  if (nombre.includes('MEDELLIN')) return '0500113991';
+  if (nombre.includes('PEREIRA')) return '6600103435';
+  if (nombre.includes('CALI')) return '7600115821';
+  return null;
+}
+
+async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idSede = null, contratos = [] } = {}) {
   const filter = String(search ?? '').trim();
   const wildcard = `%${filter}%`;
 
@@ -3432,6 +3463,13 @@ async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idS
   if (idSede) {
     conditions.push('almref.id_sede = ?');
     params.push(idSede);
+  }
+  const contratosLimpios = (Array.isArray(contratos) ? contratos : [contratos])
+    .map((c) => String(c ?? '').trim())
+    .filter(Boolean);
+  if (contratosLimpios.length) {
+    conditions.push(`c.contrato IN (${contratosLimpios.map(() => '?').join(',')})`);
+    params.push(...contratosLimpios);
   }
   const where = `WHERE ${conditions.join(' AND ')}`;
 
@@ -3492,16 +3530,21 @@ async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idS
     const prescriptor = prescriptorPorFormulacion[row.id_formulacion_hs];
     return {
       ...row,
+      // Sin formatear, la fecha sale como Date.prototype.toString() al
+      // exportar (mysql2 devuelve DATETIME como objeto Date de JS).
+      fecha_dispensacion: formatFechaHora(row.fecha_dispensacion),
+      // "Sede": a pedido explícito del usuario, lleva el NOMBRE de la sede
+      // (lo que antes mostraba "Código habilitación" como placeholder).
+      sede_rips: row.sede ?? null,
       // El médico prescriptor es el mismo para todos los medicamentos de
       // una misma fórmula (se resuelve por id_formulacion_hs, no por
       // id_med_formulacion_hs) — null cuando la formulación no tiene
       // especialista enlazado en HS (formulaciones antiguas).
       tipo_documento_medico: prescriptor?.tipo_documento_medico ?? null,
       numero_documento_medico: prescriptor?.numero_documento_medico ?? null,
-      // Por ahora no existe código de habilitación (REPS) capturado en el
-      // sistema — a pedido explícito, este campo lleva el NOMBRE de la sede
-      // donde se dispensó mientras se carga ese dato real.
-      codigo_habilitacion: row.sede ?? null,
+      registro_profesional_medico: prescriptor?.registro_profesional_medico ?? null,
+      // Código de habilitación (REPS) fijo por sede — ver codigoHabilitacionPorSede.
+      codigo_habilitacion: codigoHabilitacionPorSede(row.sede),
       diagnostico_cie10: dx?.cie10 ?? null,
       diagnostico_texto: dx?.dx_completo ?? null,
       // "Tipo de medicamento": todavía no hay fuente de datos para esto
@@ -3543,7 +3586,7 @@ function buildRipsAmReport(filter, rows) {
     summary: {
       registros: rows.length,
       sin_cie10: countWhere(rows, (row) => !row.diagnostico_cie10),
-      sin_codigo_habilitacion: countWhere(rows, (row) => !row.codigo_habilitacion),
+      sin_sede: countWhere(rows, (row) => !row.sede_rips),
       sin_medico_prescriptor: countWhere(rows, (row) => !row.numero_documento_medico)
     },
     // El dataset completo (paciente, CUM, medicamento, etc.) se sigue
@@ -3554,11 +3597,14 @@ function buildRipsAmReport(filter, rows) {
   };
 }
 
-// Únicamente las 3 variables confirmadas hasta ahora (código habilitación,
-// fecha dispensación, CIE-10). Cuando lleguen las siguientes, se agregan
-// aquí en el orden que se indique — el resto del dataset ya está disponible
-// en `rows`, solo falta exponerlo.
+// Únicamente las variables confirmadas hasta ahora. Cuando lleguen las
+// siguientes, se agregan aquí en el orden que se indique — el resto del
+// dataset ya está disponible en `rows`, solo falta exponerlo.
+// contrato/regimen: mismos valores capturados en el modal de "Dispensar
+// formulación" (dispensacion_hs_control.contrato / .regimen), ya venían en
+// el dataset pero no se exportaban.
 const RIPS_AM_COLUMNS = [
+  { key: 'sede_rips', label: 'Sede', width: 130, type: 'string' },
   { key: 'codigo_habilitacion', label: 'Código habilitación (sede)', width: 160, type: 'string' },
   { key: 'fecha_dispensacion', label: 'Fecha dispensación', width: 130, type: 'string' },
   { key: 'diagnostico_cie10', label: 'CIE-10', width: 90, type: 'string' },
@@ -3572,17 +3618,20 @@ const RIPS_AM_COLUMNS = [
   { key: 'cantidad_dispensada_rips', label: 'Cantidad dispensada', width: 100, type: 'number' },
   { key: 'temporalidad_hs', label: 'Temporalidad (días de tratamiento)', width: 150, type: 'string' },
   { key: 'tipo_documento_medico', label: 'Tipo de documento médico prescriptor', width: 140, type: 'string' },
-  { key: 'numero_documento_medico', label: 'Número de documento médico prescriptor', width: 140, type: 'string' }
+  { key: 'numero_documento_medico', label: 'Número de documento médico prescriptor', width: 140, type: 'string' },
+  { key: 'registro_profesional_medico', label: 'Registro profesional médico prescriptor', width: 150, type: 'string' },
+  { key: 'contrato', label: 'Contrato', width: 130, type: 'string' },
+  { key: 'regimen', label: 'Régimen', width: 110, type: 'string' }
 ];
 
 function ripsAmSummaryRows(data) {
   return [
     { metrica: 'Fecha de generación', valor: data.generatedAt },
     { metrica: 'Filtro aplicado', valor: data.filter || 'Sin filtro' },
-    { metrica: 'ADVERTENCIA', valor: 'Solo se incluyen las variables confirmadas hasta ahora (código habilitación, fecha dispensación, CIE-10). Faltan las siguientes por homologar.' },
+    { metrica: 'ADVERTENCIA', valor: 'Solo se incluyen las variables confirmadas hasta ahora. Aún faltan variables del RIPS estándar por homologar.' },
     { metrica: 'Registros', valor: data.summary.registros },
     { metrica: 'Registros sin diagnóstico CIE-10', valor: data.summary.sin_cie10 },
-    { metrica: 'Registros sin código de habilitación (sede)', valor: data.summary.sin_codigo_habilitacion },
+    { metrica: 'Registros sin sede resuelta', valor: data.summary.sin_sede },
     { metrica: 'Registros sin médico prescriptor enlazado en HS', valor: data.summary.sin_medico_prescriptor }
   ];
 }
@@ -3610,6 +3659,7 @@ function buildRipsAmPdf(data) {
   lines.push(...ripsAmSummaryRows(data).map((row) => `${pad(row.metrica, 40)} : ${asciiSafe(row.valor)}`));
   lines.push('', 'AM - MEDICAMENTOS (RIPS)');
   lines.push(...tableLines([
+    { key: 'sede_rips', label: 'SEDE', width: 16 },
     { key: 'codigo_habilitacion', label: 'COD HABILITACION', width: 20 },
     { key: 'fecha_dispensacion', label: 'FECHA DISPENSACION', width: 18 },
     { key: 'diagnostico_cie10', label: 'CIE10', width: 8 },
@@ -3620,7 +3670,10 @@ function buildRipsAmPdf(data) {
     { key: 'cantidad_dispensada_rips', label: 'CANT', width: 6, align: 'right' },
     { key: 'temporalidad_hs', label: 'TEMPORALIDAD', width: 14 },
     { key: 'tipo_documento_medico', label: 'TIPO DOC MEDICO', width: 12 },
-    { key: 'numero_documento_medico', label: 'NUM DOC MEDICO', width: 14 }
+    { key: 'numero_documento_medico', label: 'NUM DOC MEDICO', width: 14 },
+    { key: 'registro_profesional_medico', label: 'REGISTRO PROFESIONAL', width: 16 },
+    { key: 'contrato', label: 'CONTRATO', width: 16 },
+    { key: 'regimen', label: 'REGIMEN', width: 12 }
   ], data.rows));
 
   return buildPdfDocument({

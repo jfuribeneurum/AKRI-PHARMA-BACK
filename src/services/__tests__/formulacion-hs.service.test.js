@@ -523,27 +523,46 @@ describe('formulacion-hs.service getPrescriptorPorIdFormulacion', () => {
     mockHsConnection.query.mockReset();
   });
 
-  it('resuelve tipo y número de documento del médico vía idEspecialista', async () => {
+  it('resuelve tipo y número de documento (cédula) del médico vía idEspecialista, aparte del registro profesional', async () => {
     mockHsConnection.query.mockResolvedValueOnce([[
-      { Id: 347537, tipo_documento: '1', documento: '71717384' }
+      { Id: 347537, tipo_documento: '1', documento: '71717384', registro_profesional: '71717384' }
     ]]);
 
     const result = await getPrescriptorPorIdFormulacion([347537]);
 
     const [sql, params] = mockHsConnection.query.mock.calls[0];
     expect(sql).toContain('f.idEspecialista');
+    expect(sql).toContain('u.documento');
+    expect(sql).toContain('u.registro_profesional');
     expect(params).toEqual([347537]);
-    expect(result[347537]).toEqual({ tipo_documento_medico: '1', numero_documento_medico: '71717384' });
+    expect(result[347537]).toEqual({
+      tipo_documento_medico: '1',
+      numero_documento_medico: '71717384',
+      registro_profesional_medico: '71717384'
+    });
+  });
+
+  // El registro profesional no siempre coincide con la cédula (ej. formatos
+  // "15052/09", "052009-14") — confirma que ambos se exponen por separado.
+  it('cuando el registro profesional difiere de la cédula, expone ambos por separado', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 500, tipo_documento: '1', documento: '74378119', registro_profesional: '15052/09' }
+    ]]);
+
+    const result = await getPrescriptorPorIdFormulacion([500]);
+
+    expect(result[500].numero_documento_medico).toBe('74378119');
+    expect(result[500].registro_profesional_medico).toBe('15052/09');
   });
 
   it('formulaciones sin especialista enlazado (idEspecialista=0) quedan en null, no inventadas', async () => {
     mockHsConnection.query.mockResolvedValueOnce([[
-      { Id: 21, tipo_documento: null, documento: null }
+      { Id: 21, tipo_documento: null, documento: null, registro_profesional: null }
     ]]);
 
     const result = await getPrescriptorPorIdFormulacion([21]);
 
-    expect(result[21]).toEqual({ tipo_documento_medico: null, numero_documento_medico: null });
+    expect(result[21]).toEqual({ tipo_documento_medico: null, numero_documento_medico: null, registro_profesional_medico: null });
   });
 
   it('sin ids, no consulta HealthSphere', async () => {

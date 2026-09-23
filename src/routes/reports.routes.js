@@ -154,7 +154,12 @@ function movementQueryParams(req) {
     search: String(req.query.search ?? ''),
     desde: req.query.desde ? String(req.query.desde) : null,
     hasta: req.query.hasta ? String(req.query.hasta) : null,
-    idSede: req.query.id_sede ? Number(req.query.id_sede) : null
+    idSede: req.query.id_sede ? Number(req.query.id_sede) : null,
+    // Solo lo usa RIPS (archivo AM) — llega como "?contratos=a,b,c" desde el
+    // multi-select de Informes. Los demás reportes lo ignoran en silencio.
+    contratos: req.query.contratos
+      ? String(req.query.contratos).split(',').map((c) => c.trim()).filter(Boolean)
+      : []
   };
 }
 

@@ -613,7 +613,7 @@ export async function getPrescriptorPorIdFormulacion(idsFormulacion) {
 
   const placeholders = ids.map(() => '?').join(',');
   const rows = await hsQuery(
-    `SELECT f.Id, u.tipo_documento, u.documento
+    `SELECT f.Id, u.tipo_documento, u.documento, u.registro_profesional
        FROM suhc_new_tbl_formulacion f
        LEFT JOIN suhc_new_tbl_usuario u ON u.id = f.idEspecialista
       WHERE f.Id IN (${placeholders})`,
@@ -622,7 +622,11 @@ export async function getPrescriptorPorIdFormulacion(idsFormulacion) {
   for (const r of rows) {
     result[r.Id] = {
       tipo_documento_medico: (r.tipo_documento ?? '').toString().trim() || null,
-      numero_documento_medico: (r.documento ?? '').toString().trim() || null
+      // "Número de documento médico prescriptor" = cédula del médico
+      // (u.documento). El registro profesional es un dato aparte — ver
+      // registro_profesional_medico.
+      numero_documento_medico: (r.documento ?? '').toString().trim() || null,
+      registro_profesional_medico: (r.registro_profesional ?? '').toString().trim() || null
     };
   }
   return result;

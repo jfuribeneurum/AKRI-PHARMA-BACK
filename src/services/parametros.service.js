@@ -66,10 +66,6 @@ const SEED = [
   { grupo: 'regimen_paciente', grupo_label: 'Régimen (Paciente)', valor: 'especial',     etiqueta: 'Especial',     orden: 3 },
   { grupo: 'regimen_paciente', grupo_label: 'Régimen (Paciente)', valor: 'excepcion',    etiqueta: 'Excepción',    orden: 4 },
 
-  { grupo: 'contrato', grupo_label: 'Contrato', valor: 'contrato_1', etiqueta: 'Contrato 1', orden: 1 },
-  { grupo: 'contrato', grupo_label: 'Contrato', valor: 'contrato_2', etiqueta: 'Contrato 2', orden: 2 },
-  { grupo: 'contrato', grupo_label: 'Contrato', valor: 'contrato_3', etiqueta: 'Contrato 3', orden: 3 },
-
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '0',    etiqueta: 'Excluido',  orden: 1 },
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '0.01', etiqueta: 'IVA (0%)',  orden: 2 },
   { grupo: 'iva', grupo_label: 'IVA (%)', valor: '5',    etiqueta: 'IVA (5%)',  orden: 3 },

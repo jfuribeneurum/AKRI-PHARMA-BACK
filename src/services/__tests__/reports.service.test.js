@@ -337,13 +337,45 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
       expect(params).toEqual(['2026-09-01 00:00:00', '2026-09-30 23:59:59']);
     });
 
+    // mysql2 devuelve DATETIME como objeto Date de JS — sin formatear, al
+    // exportar sale como Date.prototype.toString() ("Tue Sep 22 2026
+    // 23:36:20 GMT-0500 (hora estándar de Colombia)"). Debe salir como
+    // "DD/MM/AAAA HH:mm:ss".
+    it('formatea fecha_dispensacion como DD/MM/AAAA HH:mm:ss, no como Date.toString()', async () => {
+      query.mockResolvedValueOnce([
+        { id: 70, id_med_formulacion_hs: 501895, fecha_dispensacion: new Date(2026, 8, 22, 23, 36, 20) }
+      ]);
+
+      const dataset = await createRipsAmExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(data.rows[0].fecha_dispensacion).toBe('22/09/2026 23:36:20');
+    });
+
+    // Filtro multi-selección "Contratos" en Informes: mismas opciones que el
+    // selector "Contrato" del modal de dispensación (/parametros/contrato/activos).
+    it('filtra por uno o más contratos con c.contrato IN (...)', async () => {
+      await createRipsAmExport('json', { contratos: ['contrato_1', 'contrato_2'] }, 1);
+
+      const [sql, params] = query.mock.calls[0];
+      expect(sql).toContain('c.contrato IN (?,?)');
+      expect(params).toEqual(['contrato_1', 'contrato_2']);
+    });
+
+    it('sin contratos seleccionados, no agrega el filtro', async () => {
+      await createRipsAmExport('json', {}, 1);
+
+      const [sql, params] = query.mock.calls[0];
+      expect(sql).not.toContain('c.contrato IN');
+      expect(params).toEqual([]);
+    });
+
     // El CIE-10 real solo vive en HealthSphere (texto libre "CODIGO-desc"
     // en fm.dx) — nunca en la base local, así que se trae en un segundo
-    // viaje y se cruza por id_med_formulacion_hs. El "código de
-    // habilitación" todavía no existe como dato real (no hay columna REPS
-    // en `sedes`), así que por pedido explícito del usuario ese campo lleva
-    // el NOMBRE de la sede mientras se carga el dato real.
-    it('cruza el CIE-10 desde HealthSphere y usa el nombre de sede como código de habilitación', async () => {
+    // viaje y se cruza por id_med_formulacion_hs. "Sede" lleva el NOMBRE de
+    // la sede donde se dispensó; "Código habilitación" es un código REPS
+    // fijo por sede, a pedido explícito del usuario.
+    it('cruza el CIE-10 desde HealthSphere, usa el nombre de sede en "Sede" y el código REPS fijo en "Código habilitación"', async () => {
       query.mockResolvedValueOnce([
         { id: 55, id_med_formulacion_hs: 501882, documento_paciente: '42080262', sede: 'SEDE MEDELLIN HEMOFILIA', cum: null }
       ]);
@@ -356,7 +388,37 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
 
       expect(getDxPorIdMedFormulacion).toHaveBeenCalledWith([501882]);
       expect(data.rows[0].diagnostico_cie10).toBe('E109');
-      expect(data.rows[0].codigo_habilitacion).toBe('SEDE MEDELLIN HEMOFILIA');
+      expect(data.rows[0].sede_rips).toBe('SEDE MEDELLIN HEMOFILIA');
+      expect(data.rows[0].codigo_habilitacion).toBe('0500113991');
+    });
+
+    // Código de habilitación (REPS): fijo por sede. Medellín Hemofilia y
+    // Medellín Diabetes comparten el mismo código.
+    it.each([
+      ['SEDE MEDELLIN HEMOFILIA', '0500113991'],
+      ['SEDE MEDELLIN DIABETES', '0500113991'],
+      ['Sede Pereira', '6600103435'],
+      ['SEDE CALI', '7600115821']
+    ])('resuelve el código de habilitación para %s', async (nombreSede, codigoEsperado) => {
+      query.mockResolvedValueOnce([
+        { id: 60, id_med_formulacion_hs: 501890, sede: nombreSede }
+      ]);
+
+      const dataset = await createRipsAmExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(data.rows[0].codigo_habilitacion).toBe(codigoEsperado);
+    });
+
+    it('sede desconocida o sin sede, código de habilitación queda vacío', async () => {
+      query.mockResolvedValueOnce([
+        { id: 61, id_med_formulacion_hs: 501891, sede: null }
+      ]);
+
+      const dataset = await createRipsAmExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(data.rows[0].codigo_habilitacion).toBeNull();
     });
 
     it('arma el CUM con su consecutivo, usa el nombre de HS como descripción y la concentración de HS', async () => {
@@ -429,7 +491,7 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
         { id: 58, id_formulacion_hs: 347537, id_med_formulacion_hs: 501885, sede: 'SEDE CALI' }
       ]);
       getPrescriptorPorIdFormulacion.mockResolvedValueOnce({
-        347537: { tipo_documento_medico: '1', numero_documento_medico: '71717384' }
+        347537: { tipo_documento_medico: '1', numero_documento_medico: '71717384', registro_profesional_medico: '15052/09' }
       });
 
       const dataset = await createRipsAmExport('json', {}, 1);
@@ -438,6 +500,7 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
       expect(getPrescriptorPorIdFormulacion).toHaveBeenCalledWith([347537]);
       expect(row.tipo_documento_medico).toBe('1');
       expect(row.numero_documento_medico).toBe('71717384');
+      expect(row.registro_profesional_medico).toBe('15052/09');
     });
 
     it('formulaciones sin prescriptor enlazado quedan en null, no inventadas', async () => {
@@ -451,6 +514,7 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
 
       expect(row.tipo_documento_medico).toBeNull();
       expect(row.numero_documento_medico).toBeNull();
+      expect(row.registro_profesional_medico).toBeNull();
     });
   });
 
