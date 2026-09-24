@@ -15,12 +15,13 @@ vi.mock('../dashboard.service.js', () => ({ getSummary: vi.fn(async () => ({})) 
 vi.mock('../inventory.service.js', () => ({ listStock: vi.fn(async () => []) }));
 vi.mock('../formulacion-hs.service.js', () => ({
   getDxPorIdMedFormulacion: vi.fn(async () => ({})),
-  getPrescriptorPorIdFormulacion: vi.fn(async () => ({}))
+  getPrescriptorPorIdFormulacion: vi.fn(async () => ({})),
+  getTipoDocumentoPacientePorId: vi.fn(async () => ({}))
 }));
 
 const { query } = await import('../../config/db.js');
 const { listStock } = await import('../inventory.service.js');
-const { getDxPorIdMedFormulacion, getPrescriptorPorIdFormulacion } = await import('../formulacion-hs.service.js');
+const { getDxPorIdMedFormulacion, getPrescriptorPorIdFormulacion, getTipoDocumentoPacientePorId } = await import('../formulacion-hs.service.js');
 const {
   createPurchasesExport,
   createInventoryExport,
@@ -421,6 +422,34 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
       expect(data.rows[0].codigo_habilitacion).toBeNull();
     });
 
+    it('medicamento extra sin dx propio hereda el CIE-10 de otro medicamento de la misma formulación', async () => {
+      query.mockResolvedValueOnce([
+        { id: 70, id_formulacion_hs: 335907, id_med_formulacion_hs: 485151 },
+        { id: 71, id_formulacion_hs: 335907, id_med_formulacion_hs: 900001707 }
+      ]);
+      getDxPorIdMedFormulacion.mockResolvedValueOnce({
+        485151: { cie10: 'E109', dx_completo: 'E109-Diabetes mellitus...' }
+      });
+
+      const dataset = await createRipsAmExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(data.rows[0].diagnostico_cie10).toBe('E109');
+      expect(data.rows[1].diagnostico_cie10).toBe('E109');
+    });
+
+    it('formulación entera sin ningún dx real, el CIE-10 queda en null, no inventado', async () => {
+      query.mockResolvedValueOnce([
+        { id: 72, id_formulacion_hs: 335908, id_med_formulacion_hs: 900001710 }
+      ]);
+      getDxPorIdMedFormulacion.mockResolvedValueOnce({});
+
+      const dataset = await createRipsAmExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(data.rows[0].diagnostico_cie10).toBeNull();
+    });
+
     it('arma el CUM con su consecutivo, usa el nombre de HS como descripción y la concentración de HS', async () => {
       query.mockResolvedValueOnce([
         {
@@ -515,6 +544,38 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
       expect(row.tipo_documento_medico).toBeNull();
       expect(row.numero_documento_medico).toBeNull();
       expect(row.registro_profesional_medico).toBeNull();
+    });
+
+    // "Id" y "Nombre completo" del paciente ya vienen locales
+    // (dispensacion_hs_control.documento_paciente / .nombre_paciente); solo
+    // el "Tipo ID" requiere un viaje a HealthSphere (tblpaciente.tipo_documento
+    // vía tbl_tiposidentificacion), cruzado por id_paciente_hs.
+    it('arma tipo ID / Id / Nombre completo del paciente, cruzando el tipo de documento por id_paciente_hs', async () => {
+      query.mockResolvedValueOnce([
+        { id: 60, id_paciente_hs: 25446, documento_paciente: '1001517709', nombre_paciente: 'John Alejandro Tamayo Londoño', sede: 'SEDE CALI' }
+      ]);
+      getTipoDocumentoPacientePorId.mockResolvedValueOnce({ 25446: 'CC' });
+
+      const dataset = await createRipsAmExport('json', {}, 1);
+      const row = JSON.parse(dataset.buffer.toString('utf8')).rows[0];
+
+      expect(getTipoDocumentoPacientePorId).toHaveBeenCalledWith([25446]);
+      expect(row.tipo_documento_paciente).toBe('CC');
+      expect(row.id_paciente).toBe('1001517709');
+      expect(row.nombre_completo_paciente).toBe('John Alejandro Tamayo Londoño');
+    });
+
+    it('pacientes sin tipo de documento resuelto en HS quedan en null, no inventado', async () => {
+      query.mockResolvedValueOnce([
+        { id: 61, id_paciente_hs: 999999, documento_paciente: '123', nombre_paciente: 'Sin Tipo Doc', sede: 'SEDE CALI' }
+      ]);
+      getTipoDocumentoPacientePorId.mockResolvedValueOnce({});
+
+      const dataset = await createRipsAmExport('json', {}, 1);
+      const row = JSON.parse(dataset.buffer.toString('utf8')).rows[0];
+
+      expect(row.tipo_documento_paciente).toBeNull();
+      expect(row.id_paciente).toBe('123');
     });
   });
 

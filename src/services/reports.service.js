@@ -4,7 +4,7 @@ import { HttpError } from '../utils/http-error.js';
 import { writeAudit } from './audit.service.js';
 import { getSummary } from './dashboard.service.js';
 import { listStock } from './inventory.service.js';
-import { getDxPorIdMedFormulacion, getPrescriptorPorIdFormulacion } from './formulacion-hs.service.js';
+import { getDxPorIdMedFormulacion, getPrescriptorPorIdFormulacion, getTipoDocumentoPacientePorId } from './formulacion-hs.service.js';
 
 const MIME_TYPES = {
   json: 'application/json; charset=utf-8',
@@ -3478,6 +3478,7 @@ async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idS
         c.id,
         c.id_formulacion_hs,
         c.id_med_formulacion_hs,
+        c.id_paciente_hs,
         c.documento_paciente,
         c.nombre_paciente,
         c.nombre_medicamento,
@@ -3521,15 +3522,38 @@ async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idS
   // en fm.dx), nunca localmente — se trae en un segundo viaje (bases
   // distintas, no se puede hacer JOIN directo) y se cruza por
   // id_med_formulacion_hs, la misma clave que usa getHistorialEntregas().
-  const [dxPorId, prescriptorPorFormulacion] = await Promise.all([
+  const [dxPorId, prescriptorPorFormulacion, tipoDocPorPaciente] = await Promise.all([
     getDxPorIdMedFormulacion(rows.map((r) => r.id_med_formulacion_hs)),
-    getPrescriptorPorIdFormulacion(rows.map((r) => r.id_formulacion_hs))
+    getPrescriptorPorIdFormulacion(rows.map((r) => r.id_formulacion_hs)),
+    getTipoDocumentoPacientePorId(rows.map((r) => r.id_paciente_hs))
   ]);
-  const rowsConDx = rows.map((row) => {
+  // "Medicamentos extra" (agregados manualmente en Dispensación, ver
+  // MEDICAMENTO_EXTRA_ID_OFFSET en formulacion-hs.service.js) no vienen de
+  // la formulación real de HS, así que no tienen dx propio en fm.dx — y
+  // suhc_new_tbl_formulacion tampoco tiene un diagnóstico a nivel de
+  // formulación del que se pueda heredar. En su lugar, cuando un
+  // medicamento no trae CIE-10 propio, se hereda el de OTRO medicamento de
+  // la MISMA formulación (mismo paciente, misma atención) que sí lo tenga.
+  const cie10PorFormulacion = {};
+  for (const row of rows) {
     const dx = dxPorId[row.id_med_formulacion_hs];
+    if (dx?.cie10 && !cie10PorFormulacion[row.id_formulacion_hs]) {
+      cie10PorFormulacion[row.id_formulacion_hs] = dx;
+    }
+  }
+
+  const rowsConDx = rows.map((row) => {
+    const dx = dxPorId[row.id_med_formulacion_hs] ?? cie10PorFormulacion[row.id_formulacion_hs];
     const prescriptor = prescriptorPorFormulacion[row.id_formulacion_hs];
     return {
       ...row,
+      // Tipo/número de documento y nombre completo del PACIENTE. El
+      // documento y el nombre ya vienen locales (dispensacion_hs_control);
+      // el tipo de documento solo existe en HealthSphere (tblpaciente),
+      // resuelto contra el catálogo real tbl_tiposidentificacion.
+      tipo_documento_paciente: tipoDocPorPaciente[row.id_paciente_hs] ?? null,
+      id_paciente: row.documento_paciente ?? null,
+      nombre_completo_paciente: row.nombre_paciente ?? null,
       // Sin formatear, la fecha sale como Date.prototype.toString() al
       // exportar (mysql2 devuelve DATETIME como objeto Date de JS).
       fecha_dispensacion: formatFechaHora(row.fecha_dispensacion),
@@ -3587,7 +3611,8 @@ function buildRipsAmReport(filter, rows) {
       registros: rows.length,
       sin_cie10: countWhere(rows, (row) => !row.diagnostico_cie10),
       sin_sede: countWhere(rows, (row) => !row.sede_rips),
-      sin_medico_prescriptor: countWhere(rows, (row) => !row.numero_documento_medico)
+      sin_medico_prescriptor: countWhere(rows, (row) => !row.numero_documento_medico),
+      sin_tipo_documento_paciente: countWhere(rows, (row) => !row.tipo_documento_paciente)
     },
     // El dataset completo (paciente, CUM, medicamento, etc.) se sigue
     // trayendo y queda disponible internamente para cuando se agreguen las
@@ -3604,6 +3629,9 @@ function buildRipsAmReport(filter, rows) {
 // formulación" (dispensacion_hs_control.contrato / .regimen), ya venían en
 // el dataset pero no se exportaban.
 const RIPS_AM_COLUMNS = [
+  { key: 'tipo_documento_paciente', label: 'Tipo ID', width: 90, type: 'string' },
+  { key: 'id_paciente', label: 'Id', width: 110, type: 'string' },
+  { key: 'nombre_completo_paciente', label: 'Nombre completo', width: 220, type: 'string' },
   { key: 'sede_rips', label: 'Sede', width: 130, type: 'string' },
   { key: 'codigo_habilitacion', label: 'Código habilitación (sede)', width: 160, type: 'string' },
   { key: 'fecha_dispensacion', label: 'Fecha dispensación', width: 130, type: 'string' },
@@ -3619,7 +3647,6 @@ const RIPS_AM_COLUMNS = [
   { key: 'temporalidad_hs', label: 'Temporalidad (días de tratamiento)', width: 150, type: 'string' },
   { key: 'tipo_documento_medico', label: 'Tipo de documento médico prescriptor', width: 140, type: 'string' },
   { key: 'numero_documento_medico', label: 'Número de documento médico prescriptor', width: 140, type: 'string' },
-  { key: 'registro_profesional_medico', label: 'Registro profesional médico prescriptor', width: 150, type: 'string' },
   { key: 'contrato', label: 'Contrato', width: 130, type: 'string' },
   { key: 'regimen', label: 'Régimen', width: 110, type: 'string' }
 ];
@@ -3632,7 +3659,8 @@ function ripsAmSummaryRows(data) {
     { metrica: 'Registros', valor: data.summary.registros },
     { metrica: 'Registros sin diagnóstico CIE-10', valor: data.summary.sin_cie10 },
     { metrica: 'Registros sin sede resuelta', valor: data.summary.sin_sede },
-    { metrica: 'Registros sin médico prescriptor enlazado en HS', valor: data.summary.sin_medico_prescriptor }
+    { metrica: 'Registros sin médico prescriptor enlazado en HS', valor: data.summary.sin_medico_prescriptor },
+    { metrica: 'Registros sin tipo de documento del paciente', valor: data.summary.sin_tipo_documento_paciente }
   ];
 }
 
@@ -3659,6 +3687,9 @@ function buildRipsAmPdf(data) {
   lines.push(...ripsAmSummaryRows(data).map((row) => `${pad(row.metrica, 40)} : ${asciiSafe(row.valor)}`));
   lines.push('', 'AM - MEDICAMENTOS (RIPS)');
   lines.push(...tableLines([
+    { key: 'tipo_documento_paciente', label: 'TIPO ID', width: 8 },
+    { key: 'id_paciente', label: 'ID PACIENTE', width: 14 },
+    { key: 'nombre_completo_paciente', label: 'PACIENTE', width: 24 },
     { key: 'sede_rips', label: 'SEDE', width: 16 },
     { key: 'codigo_habilitacion', label: 'COD HABILITACION', width: 20 },
     { key: 'fecha_dispensacion', label: 'FECHA DISPENSACION', width: 18 },
@@ -3671,7 +3702,6 @@ function buildRipsAmPdf(data) {
     { key: 'temporalidad_hs', label: 'TEMPORALIDAD', width: 14 },
     { key: 'tipo_documento_medico', label: 'TIPO DOC MEDICO', width: 12 },
     { key: 'numero_documento_medico', label: 'NUM DOC MEDICO', width: 14 },
-    { key: 'registro_profesional_medico', label: 'REGISTRO PROFESIONAL', width: 16 },
     { key: 'contrato', label: 'CONTRATO', width: 16 },
     { key: 'regimen', label: 'REGIMEN', width: 12 }
   ], data.rows));

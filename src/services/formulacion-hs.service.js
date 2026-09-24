@@ -606,6 +606,9 @@ export async function getDxPorIdMedFormulacion(idsMedFormulacion) {
 // los renglones de una misma fórmula comparten el mismo prescriptor. Cuando
 // idEspecialista = 0 (formulaciones antiguas sin especialista enlazado), no
 // hay prescriptor que resolver y el resultado queda null, no inventado.
+// tipo_documento_medico: u.tipo_documento es el mismo código numérico que
+// tblpaciente.tipo_documento — se resuelve contra el mismo catálogo real
+// tbl_tiposidentificacion (1=CC, 5=TI, etc.) en vez de exponer el código crudo.
 export async function getPrescriptorPorIdFormulacion(idsFormulacion) {
   const result = {};
   const ids = [...new Set(idsFormulacion.filter(Boolean))];
@@ -613,9 +616,10 @@ export async function getPrescriptorPorIdFormulacion(idsFormulacion) {
 
   const placeholders = ids.map(() => '?').join(',');
   const rows = await hsQuery(
-    `SELECT f.Id, u.tipo_documento, u.documento, u.registro_profesional
+    `SELECT f.Id, ti.nombre AS tipo_documento, u.documento, u.registro_profesional
        FROM suhc_new_tbl_formulacion f
        LEFT JOIN suhc_new_tbl_usuario u ON u.id = f.idEspecialista
+       LEFT JOIN tbl_tiposidentificacion ti ON ti.id = u.tipo_documento
       WHERE f.Id IN (${placeholders})`,
     ids
   );
@@ -628,6 +632,31 @@ export async function getPrescriptorPorIdFormulacion(idsFormulacion) {
       numero_documento_medico: (r.documento ?? '').toString().trim() || null,
       registro_profesional_medico: (r.registro_profesional ?? '').toString().trim() || null
     };
+  }
+  return result;
+}
+
+// "Tipo ID" del paciente para RIPS: dispensacion_hs_control YA trae
+// documento_paciente/nombre_paciente (locales, suficientes para "Id" y
+// "Nombre completo"), pero NO guarda el tipo de documento — solo existe en
+// HealthSphere (tblpaciente.tipo_documento, código numérico) y se resuelve
+// contra el catálogo real tbl_tiposidentificacion (1=CC, 2=CE, 3=PA, 4=RC,
+// 5=TI, ... — mismos códigos que usa el formulario de pacientes de HS).
+export async function getTipoDocumentoPacientePorId(idsPacienteHs) {
+  const result = {};
+  const ids = [...new Set(idsPacienteHs.filter(Boolean))];
+  if (!ids.length) return result;
+
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await hsQuery(
+    `SELECT p.id, ti.nombre AS tipo_documento
+       FROM tblpaciente p
+       LEFT JOIN tbl_tiposidentificacion ti ON ti.id = p.tipo_documento
+      WHERE p.id IN (${placeholders})`,
+    ids
+  );
+  for (const r of rows) {
+    result[r.id] = (r.tipo_documento ?? '').toString().trim() || null;
   }
   return result;
 }

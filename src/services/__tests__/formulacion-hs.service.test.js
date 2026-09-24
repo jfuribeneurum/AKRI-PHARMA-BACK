@@ -25,7 +25,8 @@ const {
   getExclusionYExtraCounts,
   listFormulacionesHS,
   getDxPorIdMedFormulacion,
-  getPrescriptorPorIdFormulacion
+  getPrescriptorPorIdFormulacion,
+  getTipoDocumentoPacientePorId
 } = await import('../formulacion-hs.service.js');
 
 describe('formulacion-hs.service getFormulacionHSById', () => {
@@ -523,9 +524,9 @@ describe('formulacion-hs.service getPrescriptorPorIdFormulacion', () => {
     mockHsConnection.query.mockReset();
   });
 
-  it('resuelve tipo y número de documento (cédula) del médico vía idEspecialista, aparte del registro profesional', async () => {
+  it('resuelve tipo (texto real, ej. "CC") y número de documento (cédula) del médico vía idEspecialista, aparte del registro profesional', async () => {
     mockHsConnection.query.mockResolvedValueOnce([[
-      { Id: 347537, tipo_documento: '1', documento: '71717384', registro_profesional: '71717384' }
+      { Id: 347537, tipo_documento: 'CC', documento: '71717384', registro_profesional: '71717384' }
     ]]);
 
     const result = await getPrescriptorPorIdFormulacion([347537]);
@@ -534,9 +535,10 @@ describe('formulacion-hs.service getPrescriptorPorIdFormulacion', () => {
     expect(sql).toContain('f.idEspecialista');
     expect(sql).toContain('u.documento');
     expect(sql).toContain('u.registro_profesional');
+    expect(sql).toContain('tbl_tiposidentificacion');
     expect(params).toEqual([347537]);
     expect(result[347537]).toEqual({
-      tipo_documento_medico: '1',
+      tipo_documento_medico: 'CC',
       numero_documento_medico: '71717384',
       registro_profesional_medico: '71717384'
     });
@@ -546,7 +548,7 @@ describe('formulacion-hs.service getPrescriptorPorIdFormulacion', () => {
   // "15052/09", "052009-14") — confirma que ambos se exponen por separado.
   it('cuando el registro profesional difiere de la cédula, expone ambos por separado', async () => {
     mockHsConnection.query.mockResolvedValueOnce([[
-      { Id: 500, tipo_documento: '1', documento: '74378119', registro_profesional: '15052/09' }
+      { Id: 500, tipo_documento: 'CC', documento: '74378119', registro_profesional: '15052/09' }
     ]]);
 
     const result = await getPrescriptorPorIdFormulacion([500]);
@@ -567,6 +569,47 @@ describe('formulacion-hs.service getPrescriptorPorIdFormulacion', () => {
 
   it('sin ids, no consulta HealthSphere', async () => {
     const result = await getPrescriptorPorIdFormulacion([]);
+    expect(mockHsConnection.query).not.toHaveBeenCalled();
+    expect(result).toEqual({});
+  });
+});
+
+// "Tipo ID" del paciente para RIPS: dispensacion_hs_control (local) ya trae
+// documento/nombre del paciente, pero el tipo de documento solo existe en
+// HealthSphere (tblpaciente.tipo_documento, código numérico) — se resuelve
+// contra el catálogo real tbl_tiposidentificacion (1=CC, 5=TI, etc.), no
+// contra un mapa inventado en este código.
+describe('formulacion-hs.service getTipoDocumentoPacientePorId', () => {
+  beforeEach(() => {
+    mockHsConnection.query.mockReset();
+  });
+
+  it('resuelve el tipo de documento del paciente contra tbl_tiposidentificacion', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { id: 25446, tipo_documento: 'CC' }
+    ]]);
+
+    const result = await getTipoDocumentoPacientePorId([25446]);
+
+    const [sql, params] = mockHsConnection.query.mock.calls[0];
+    expect(sql).toContain('tblpaciente');
+    expect(sql).toContain('tbl_tiposidentificacion');
+    expect(params).toEqual([25446]);
+    expect(result[25446]).toBe('CC');
+  });
+
+  it('paciente sin tipo de documento resuelto queda en null, no inventado', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { id: 999999, tipo_documento: null }
+    ]]);
+
+    const result = await getTipoDocumentoPacientePorId([999999]);
+
+    expect(result[999999]).toBeNull();
+  });
+
+  it('sin ids, no consulta HealthSphere', async () => {
+    const result = await getTipoDocumentoPacientePorId([]);
     expect(mockHsConnection.query).not.toHaveBeenCalled();
     expect(result).toEqual({});
   });
