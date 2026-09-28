@@ -26,7 +26,8 @@ const {
   listFormulacionesHS,
   getDxPorIdMedFormulacion,
   getPrescriptorPorIdFormulacion,
-  getTipoDocumentoPacientePorId
+  getTipoDocumentoPacientePorId,
+  getExtrasFormulacionPorId
 } = await import('../formulacion-hs.service.js');
 
 describe('formulacion-hs.service getFormulacionHSById', () => {
@@ -610,6 +611,57 @@ describe('formulacion-hs.service getTipoDocumentoPacientePorId', () => {
 
   it('sin ids, no consulta HealthSphere', async () => {
     const result = await getTipoDocumentoPacientePorId([]);
+    expect(mockHsConnection.query).not.toHaveBeenCalled();
+    expect(result).toEqual({});
+  });
+});
+
+// Informe de Dispensación (propio, distinto de RIPS): "Número de historia"
+// es el consecutivo de la ATENCIÓN vinculada a la formulación (el folio real
+// de HealthSphere, no el id interno), y "Especialidad del médico" viene de
+// tbl_especialidadusuario — un usuario puede tener varias especialidades
+// activas, así que se listan todas separadas por " / " en vez de elegir una.
+describe('formulacion-hs.service getExtrasFormulacionPorId', () => {
+  beforeEach(() => {
+    mockHsConnection.query.mockReset();
+  });
+
+  it('resuelve el consecutivo de la atención y la especialidad del médico', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 286718, consecutivo: 316130, especialidades: 'Medico general' }
+    ]]);
+
+    const result = await getExtrasFormulacionPorId([286718]);
+
+    const [sql, params] = mockHsConnection.query.mock.calls[0];
+    expect(sql).toContain('suhc_new_tbl_atencion');
+    expect(sql).toContain('tbl_especialidadusuario');
+    expect(params).toEqual([286718]);
+    expect(result[286718]).toEqual({ numero_formula: 316130, especialidad_medico: 'Medico general' });
+  });
+
+  it('médico con varias especialidades activas: se listan todas separadas por " / "', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 999, consecutivo: 1, especialidades: 'Medicina interna / Endocrinología' }
+    ]]);
+
+    const result = await getExtrasFormulacionPorId([999]);
+
+    expect(result[999].especialidad_medico).toBe('Medicina interna / Endocrinología');
+  });
+
+  it('formulación sin atención o especialidad resuelta queda en null, no inventado', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[
+      { Id: 1000, consecutivo: null, especialidades: null }
+    ]]);
+
+    const result = await getExtrasFormulacionPorId([1000]);
+
+    expect(result[1000]).toEqual({ numero_formula: null, especialidad_medico: null });
+  });
+
+  it('sin ids, no consulta HealthSphere', async () => {
+    const result = await getExtrasFormulacionPorId([]);
     expect(mockHsConnection.query).not.toHaveBeenCalled();
     expect(result).toEqual({});
   });

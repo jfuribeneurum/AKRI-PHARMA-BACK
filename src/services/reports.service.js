@@ -4,20 +4,35 @@ import { HttpError } from '../utils/http-error.js';
 import { writeAudit } from './audit.service.js';
 import { getSummary } from './dashboard.service.js';
 import { listStock } from './inventory.service.js';
-import { getDxPorIdMedFormulacion, getPrescriptorPorIdFormulacion, getTipoDocumentoPacientePorId } from './formulacion-hs.service.js';
+import { getDxPorIdMedFormulacion, getPrescriptorPorIdFormulacion, getTipoDocumentoPacientePorId, getExtrasFormulacionPorId } from './formulacion-hs.service.js';
 
 const MIME_TYPES = {
   json: 'application/json; charset=utf-8',
   excel: 'application/vnd.ms-excel; charset=utf-8',
-  pdf: 'application/pdf'
+  pdf: 'application/pdf',
+  csv: 'text/csv; charset=utf-8'
 };
 
 function normalizeFormat(format) {
   const normalized = String(format ?? 'json').trim().toLowerCase();
-  if (!['json', 'excel', 'pdf'].includes(normalized)) {
-    throw new HttpError(400, 'Formato no soportado. Usa json, excel o pdf.');
+  if (!['json', 'excel', 'pdf', 'csv'].includes(normalized)) {
+    throw new HttpError(400, 'Formato no soportado. Usa json, excel, pdf o csv.');
   }
   return normalized;
+}
+
+// CSV plano (una sola tabla, sin hoja de resumen) — con BOM UTF-8 para que
+// Excel en español muestre bien las tildes/Ñ al abrir el archivo.
+function csvEscape(value) {
+  if (value === null || value === undefined) return '';
+  const text = String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function buildCsv(columns, rows) {
+  const header = columns.map((c) => csvEscape(c.label)).join(',');
+  const body = rows.map((row) => columns.map((c) => csvEscape(row?.[c.key])).join(',')).join('\r\n');
+  return Buffer.from(`﻿${header}\r\n${body}`, 'utf8');
 }
 
 function normalizeBoundedInteger(value, fallback, { min = 1, max = 3650 } = {}) {
@@ -1283,7 +1298,7 @@ function buildColdChainPdf(data) {
   });
 }
 
-async function finalizeExport({ normalizedFormat, fileBase, data, submodulo, descripcion, userId, excelBuilder, pdfBuilder }) {
+async function finalizeExport({ normalizedFormat, fileBase, data, submodulo, descripcion, userId, excelBuilder, pdfBuilder, csvBuilder }) {
   let buffer;
   let filename;
 
@@ -1293,6 +1308,10 @@ async function finalizeExport({ normalizedFormat, fileBase, data, submodulo, des
   } else if (normalizedFormat === 'excel') {
     buffer = excelBuilder(data);
     filename = `${fileBase}.xls`;
+  } else if (normalizedFormat === 'csv') {
+    if (!csvBuilder) throw new HttpError(400, 'Este informe todavía no soporta formato csv.');
+    buffer = csvBuilder(data);
+    filename = `${fileBase}.csv`;
   } else {
     buffer = pdfBuilder(data);
     filename = `${fileBase}.pdf`;
@@ -3402,10 +3421,18 @@ export async function createMaestroExport(format, params = {}, userId = null) {
   });
 }
 
+// Informe "Dispensación": propio, distinto de RIPS (ver
+// fetchDispensacionDetalladaDataset más abajo) — solo se puede descargar en
+// Excel. buildDispensingExcel/buildDispensingPdf/fetchDispensingDataset (el
+// cruce formulado-vs-dispensado anterior) quedan sin usar aquí, no se
+// borraron por si se retoman más adelante.
 export async function createDispensingExport(format, params = {}, userId = null) {
   const normalizedFormat = normalizeFormat(format);
-  const dataset = await fetchDispensingDataset(typeof params === 'string' ? { search: params } : params);
-  const data = buildDispensingReport(dataset.filter, dataset.headers, dataset.details);
+  if (!['json', 'excel'].includes(normalizedFormat)) {
+    throw new HttpError(400, 'Este informe solo soporta formato excel.');
+  }
+  const dataset = await fetchDispensacionDetalladaDataset(typeof params === 'string' ? { search: params } : params);
+  const data = buildDispensacionDetalladaReport(dataset.filter, dataset.rows);
   const fileBase = `akripharmacy-dispensacion-${timestampForFile()}`;
 
   return finalizeExport({
@@ -3415,8 +3442,7 @@ export async function createDispensingExport(format, params = {}, userId = null)
     submodulo: 'DISPENSACION',
     descripcion: `Exportación de dispensación en formato ${normalizedFormat}${dataset.filter ? ` con filtro ${dataset.filter}` : ''}`,
     userId,
-    excelBuilder: buildDispensingExcel,
-    pdfBuilder: buildDispensingPdf
+    excelBuilder: buildDispensacionDetalladaExcel
   });
 }
 
@@ -3632,6 +3658,8 @@ const RIPS_AM_COLUMNS = [
   { key: 'tipo_documento_paciente', label: 'Tipo ID', width: 90, type: 'string' },
   { key: 'id_paciente', label: 'Id', width: 110, type: 'string' },
   { key: 'nombre_completo_paciente', label: 'Nombre completo', width: 220, type: 'string' },
+  { key: 'contrato', label: 'Contrato', width: 130, type: 'string' },
+  { key: 'regimen', label: 'Régimen', width: 110, type: 'string' },
   { key: 'sede_rips', label: 'Sede', width: 130, type: 'string' },
   { key: 'codigo_habilitacion', label: 'Código habilitación (sede)', width: 160, type: 'string' },
   { key: 'fecha_dispensacion', label: 'Fecha dispensación', width: 130, type: 'string' },
@@ -3646,9 +3674,7 @@ const RIPS_AM_COLUMNS = [
   { key: 'cantidad_dispensada_rips', label: 'Cantidad dispensada', width: 100, type: 'number' },
   { key: 'temporalidad_hs', label: 'Temporalidad (días de tratamiento)', width: 150, type: 'string' },
   { key: 'tipo_documento_medico', label: 'Tipo de documento médico prescriptor', width: 140, type: 'string' },
-  { key: 'numero_documento_medico', label: 'Número de documento médico prescriptor', width: 140, type: 'string' },
-  { key: 'contrato', label: 'Contrato', width: 130, type: 'string' },
-  { key: 'regimen', label: 'Régimen', width: 110, type: 'string' }
+  { key: 'numero_documento_medico', label: 'Número de documento médico prescriptor', width: 140, type: 'string' }
 ];
 
 function ripsAmSummaryRows(data) {
@@ -3690,6 +3716,8 @@ function buildRipsAmPdf(data) {
     { key: 'tipo_documento_paciente', label: 'TIPO ID', width: 8 },
     { key: 'id_paciente', label: 'ID PACIENTE', width: 14 },
     { key: 'nombre_completo_paciente', label: 'PACIENTE', width: 24 },
+    { key: 'contrato', label: 'CONTRATO', width: 16 },
+    { key: 'regimen', label: 'REGIMEN', width: 12 },
     { key: 'sede_rips', label: 'SEDE', width: 16 },
     { key: 'codigo_habilitacion', label: 'COD HABILITACION', width: 20 },
     { key: 'fecha_dispensacion', label: 'FECHA DISPENSACION', width: 18 },
@@ -3701,9 +3729,7 @@ function buildRipsAmPdf(data) {
     { key: 'cantidad_dispensada_rips', label: 'CANT', width: 6, align: 'right' },
     { key: 'temporalidad_hs', label: 'TEMPORALIDAD', width: 14 },
     { key: 'tipo_documento_medico', label: 'TIPO DOC MEDICO', width: 12 },
-    { key: 'numero_documento_medico', label: 'NUM DOC MEDICO', width: 14 },
-    { key: 'contrato', label: 'CONTRATO', width: 16 },
-    { key: 'regimen', label: 'REGIMEN', width: 12 }
+    { key: 'numero_documento_medico', label: 'NUM DOC MEDICO', width: 14 }
   ], data.rows));
 
   return buildPdfDocument({
@@ -3728,8 +3754,245 @@ export async function createRipsAmExport(format, params = {}, userId = null) {
     descripcion: `Exportación de RIPS (archivo AM) en formato ${normalizedFormat} — estructura estándar pendiente de homologación`,
     userId,
     excelBuilder: buildRipsAmExcel,
-    pdfBuilder: buildRipsAmPdf
+    pdfBuilder: buildRipsAmPdf,
+    // Solo la tabla AM_Medicamentos — el CSV es el archivo plano de datos,
+    // el resumen/advertencia no aplica a ese formato.
+    csvBuilder: (d) => buildCsv(RIPS_AM_COLUMNS, d.rows)
   });
+}
+
+// Informe "Dispensación": propio (distinto de RIPS), mismo origen de datos
+// (dispensacion_hs_control, cantidad_dispensada > 0) pero con SU PROPIO set
+// de variables — incluye datos operativos (lote, laboratorio, código interno,
+// cantidad pendiente/faltante, número de historia, especialidad del médico)
+// que RIPS no necesita, y deja fuera variables de RIPS que aquí no aplican
+// (tipo de medicamento, concentración, forma farmacéutica, unidad mínima).
+//
+// "Cantidad pendiente" / "Cantidad faltante": NO son columnas de
+// dispensacion_hs_control (esa tabla solo guarda el acumulado actual) — se
+// calculan en el momento de cada entrega en el frontend (getPendiente/
+// getFaltante en dispensacion-pharma.component.ts) y quedan guardadas en el
+// payload JSON de la traza de auditoría (procesos_terminados_trazabilidad),
+// una fila por acción de entrega, referenciada por referencia_id = el id de
+// dispensacion_hs_control. Se toma la traza MÁS RECIENTE por cada control
+// (una misma fila de control puede tener varias entregas parciales en su
+// historial). Filas sin ninguna traza (ej. datos migrados antes de este
+// registro) quedan en null, no en 0 — no inventar que no falta nada.
+async function fetchDispensacionDetalladaDataset({ search = '', desde = null, hasta = null, idSede = null, contratos = [] } = {}) {
+  const filter = String(search ?? '').trim();
+  const wildcard = `%${filter}%`;
+
+  const conditions = ['c.cantidad_dispensada > 0'];
+  const params = [];
+  if (filter) {
+    conditions.push(`(c.nombre_paciente LIKE ? OR c.documento_paciente LIKE ? OR c.nombre_medicamento LIKE ?)`);
+    params.push(wildcard, wildcard, wildcard);
+  }
+  if (desde) {
+    conditions.push('c.fecha_dispensacion >= ?');
+    params.push(`${desde} 00:00:00`);
+  }
+  if (hasta) {
+    conditions.push('c.fecha_dispensacion <= ?');
+    params.push(`${hasta} 23:59:59`);
+  }
+  if (idSede) {
+    conditions.push('almref.id_sede = ?');
+    params.push(idSede);
+  }
+  const contratosLimpios = (Array.isArray(contratos) ? contratos : [contratos])
+    .map((c) => String(c ?? '').trim())
+    .filter(Boolean);
+  if (contratosLimpios.length) {
+    conditions.push(`c.contrato IN (${contratosLimpios.map(() => '?').join(',')})`);
+    params.push(...contratosLimpios);
+  }
+  const where = `WHERE ${conditions.join(' AND ')}`;
+
+  const rows = await query(
+    `SELECT
+        c.id,
+        c.id_formulacion_hs,
+        c.id_med_formulacion_hs,
+        c.id_paciente_hs,
+        c.documento_paciente,
+        c.nombre_paciente,
+        c.nombre_medicamento,
+        c.cantidad_dispensada,
+        c.fecha_dispensacion,
+        c.contrato,
+        c.regimen,
+        p.cum,
+        p.consecutivo_cum,
+        p.sku,
+        lab.nombre AS laboratorio,
+        loteref.lotes,
+        trz.payload_json,
+        sedref.nombre AS sede
+     FROM dispensacion_hs_control c
+     LEFT JOIN productos p ON p.id_producto = c.id_producto
+     LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
+     LEFT JOIN (
+       SELECT m1.referencia_id, m1.id_almacen_origen
+       FROM movimientos_inventario m1
+       INNER JOIN (
+         SELECT referencia_id, MAX(fecha_hora) AS max_fecha
+         FROM movimientos_inventario
+         WHERE referencia_tipo = 'DISPENSACION_HS_CONTROL'
+         GROUP BY referencia_id
+       ) mx ON mx.referencia_id = m1.referencia_id AND mx.max_fecha = m1.fecha_hora
+       WHERE m1.referencia_tipo = 'DISPENSACION_HS_CONTROL'
+       GROUP BY m1.referencia_id, m1.id_almacen_origen
+     ) movref_almacen ON movref_almacen.referencia_id = c.id
+     LEFT JOIN almacenes almref ON almref.id_almacen = movref_almacen.id_almacen_origen
+     LEFT JOIN sedes sedref ON sedref.id_sede = almref.id_sede
+     LEFT JOIN (
+       SELECT m.referencia_id, GROUP_CONCAT(DISTINCT l.numero_lote SEPARATOR ', ') AS lotes
+       FROM movimientos_inventario m
+       LEFT JOIN lotes l ON l.id_lote = m.id_lote
+       WHERE m.referencia_tipo = 'DISPENSACION_HS_CONTROL'
+       GROUP BY m.referencia_id
+     ) loteref ON loteref.referencia_id = c.id
+     LEFT JOIN (
+       SELECT t1.referencia_id, t1.payload_json
+       FROM procesos_terminados_trazabilidad t1
+       INNER JOIN (
+         SELECT referencia_id, MAX(id_traza) AS max_id
+         FROM procesos_terminados_trazabilidad
+         WHERE referencia_tipo = 'DISPENSACION_HS_CONTROL' AND subproceso = 'DISPENSAR_MEDICAMENTO_HS'
+         GROUP BY referencia_id
+       ) tx ON tx.referencia_id = t1.referencia_id AND tx.max_id = t1.id_traza
+     ) trz ON trz.referencia_id = c.id
+     ${where}
+     ORDER BY c.fecha_dispensacion DESC`,
+    params
+  );
+
+  const [dxPorId, prescriptorPorFormulacion, tipoDocPorPaciente, extrasPorFormulacion] = await Promise.all([
+    getDxPorIdMedFormulacion(rows.map((r) => r.id_med_formulacion_hs)),
+    getPrescriptorPorIdFormulacion(rows.map((r) => r.id_formulacion_hs)),
+    getTipoDocumentoPacientePorId(rows.map((r) => r.id_paciente_hs)),
+    getExtrasFormulacionPorId(rows.map((r) => r.id_formulacion_hs))
+  ]);
+  // Mismo fallback que RIPS: un "medicamento extra" sin dx propio hereda el
+  // CIE-10 de otro medicamento real de la MISMA formulación.
+  const cie10PorFormulacion = {};
+  for (const row of rows) {
+    const dx = dxPorId[row.id_med_formulacion_hs];
+    if (dx?.cie10 && !cie10PorFormulacion[row.id_formulacion_hs]) {
+      cie10PorFormulacion[row.id_formulacion_hs] = dx;
+    }
+  }
+
+  const rowsConDatos = rows.map((row) => {
+    const dx = dxPorId[row.id_med_formulacion_hs] ?? cie10PorFormulacion[row.id_formulacion_hs];
+    const prescriptor = prescriptorPorFormulacion[row.id_formulacion_hs];
+    const extras = extrasPorFormulacion[row.id_formulacion_hs];
+
+    let cantidadPendiente = null;
+    let cantidadFaltante = null;
+    if (row.payload_json) {
+      try {
+        const payload = JSON.parse(row.payload_json);
+        cantidadPendiente = payload.cantidad_pendiente_antes ?? null;
+        cantidadFaltante = payload.cantidad_faltante ?? null;
+      } catch {
+        // traza corrupta/no parseable — se deja en null, no se inventa
+      }
+    }
+
+    return {
+      ...row,
+      sede_dispensacion: row.sede ?? null,
+      tipo_documento_paciente: tipoDocPorPaciente[row.id_paciente_hs] ?? null,
+      id_paciente: row.documento_paciente ?? null,
+      nombre_completo_paciente: row.nombre_paciente ?? null,
+      fecha_dispensacion: formatFechaHora(row.fecha_dispensacion),
+      numero_formula: extras?.numero_formula ?? null,
+      diagnostico_cie10: dx?.cie10 ?? null,
+      temporalidad_hs: dx?.temporalidad_hs ?? null,
+      tipo_documento_medico: prescriptor?.tipo_documento_medico ?? null,
+      numero_documento_medico: prescriptor?.numero_documento_medico ?? null,
+      especialidad_medico: extras?.especialidad_medico ?? null,
+      codigo_interno: row.sku ?? null,
+      descripcion_producto: row.nombre_medicamento,
+      cantidad_dispensada_rips: row.cantidad_dispensada,
+      cantidad_pendiente: cantidadPendiente,
+      cantidad_faltante: cantidadFaltante,
+      lote: row.lotes ?? null,
+      laboratorio: row.laboratorio ?? null,
+      cum_completo: row.cum ? `${row.cum}${row.consecutivo_cum != null ? `-${row.consecutivo_cum}` : ''}` : null
+    };
+  });
+
+  return { filter, rows: rowsConDatos };
+}
+
+function buildDispensacionDetalladaReport(filter, rows) {
+  return {
+    generatedAt: new Date().toISOString(),
+    filter,
+    summary: {
+      registros: rows.length,
+      sin_cie10: countWhere(rows, (row) => !row.diagnostico_cie10),
+      sin_medico_prescriptor: countWhere(rows, (row) => !row.numero_documento_medico),
+      sin_lote: countWhere(rows, (row) => !row.lote)
+    },
+    rows
+  };
+}
+
+function dispensacionDetalladaSummaryRows(data) {
+  return [
+    { metrica: 'Fecha de generación', valor: data.generatedAt },
+    { metrica: 'Filtro aplicado', valor: data.filter || 'Sin filtro' },
+    { metrica: 'Registros', valor: data.summary.registros },
+    { metrica: 'Registros sin diagnóstico CIE-10', valor: data.summary.sin_cie10 },
+    { metrica: 'Registros sin médico prescriptor enlazado en HS', valor: data.summary.sin_medico_prescriptor },
+    { metrica: 'Registros sin lote registrado', valor: data.summary.sin_lote }
+  ];
+}
+
+const DISPENSACION_DETALLADA_COLUMNS = [
+  { key: 'sede_dispensacion', label: 'Sede', width: 130, type: 'string' },
+  { key: 'contrato', label: 'Contrato', width: 130, type: 'string' },
+  { key: 'regimen', label: 'Régimen', width: 110, type: 'string' },
+  { key: 'tipo_documento_paciente', label: 'Tipo ID', width: 90, type: 'string' },
+  { key: 'id_paciente', label: 'Id', width: 110, type: 'string' },
+  { key: 'nombre_completo_paciente', label: 'Nombre completo', width: 220, type: 'string' },
+  { key: 'fecha_dispensacion', label: 'Fecha dispensación', width: 130, type: 'string' },
+  { key: 'numero_formula', label: 'Número de formula (#Historia)', width: 140, type: 'string' },
+  { key: 'temporalidad_hs', label: 'Temporalidad (días de tratamiento)', width: 150, type: 'string' },
+  { key: 'diagnostico_cie10', label: 'CIE-10', width: 90, type: 'string' },
+  { key: 'tipo_documento_medico', label: 'Tipo de documento médico prescriptor', width: 140, type: 'string' },
+  { key: 'numero_documento_medico', label: 'Número de documento médico prescriptor', width: 140, type: 'string' },
+  { key: 'especialidad_medico', label: 'Especialidad del médico', width: 160, type: 'string' },
+  { key: 'codigo_interno', label: 'Código interno (MX, DM...)', width: 120, type: 'string' },
+  { key: 'descripcion_producto', label: 'Descripción del producto', width: 260, type: 'string' },
+  { key: 'cantidad_dispensada_rips', label: 'Cantidad dispensada', width: 100, type: 'number' },
+  { key: 'cantidad_pendiente', label: 'Cantidad pendiente', width: 100, type: 'number' },
+  { key: 'cantidad_faltante', label: 'Cantidad faltante', width: 100, type: 'number' },
+  { key: 'lote', label: 'Lote', width: 120, type: 'string' },
+  { key: 'laboratorio', label: 'Laboratorio', width: 140, type: 'string' },
+  { key: 'cum_completo', label: 'CUM', width: 110, type: 'string' }
+];
+
+function buildDispensacionDetalladaExcel(data) {
+  return buildExcelWorkbook([
+    {
+      name: 'Resumen',
+      columns: [
+        { key: 'metrica', label: 'Métrica', width: 260, type: 'string' },
+        { key: 'valor', label: 'Valor', width: 200, type: 'string' }
+      ],
+      rows: dispensacionDetalladaSummaryRows(data)
+    },
+    {
+      name: 'Dispensacion',
+      columns: DISPENSACION_DETALLADA_COLUMNS,
+      rows: data.rows
+    }
+  ]);
 }
 
 // Informe "Pendientes (generados y pagados)": el sistema HOY no tiene

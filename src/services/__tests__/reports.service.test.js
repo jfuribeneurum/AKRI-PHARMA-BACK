@@ -16,12 +16,13 @@ vi.mock('../inventory.service.js', () => ({ listStock: vi.fn(async () => []) }))
 vi.mock('../formulacion-hs.service.js', () => ({
   getDxPorIdMedFormulacion: vi.fn(async () => ({})),
   getPrescriptorPorIdFormulacion: vi.fn(async () => ({})),
-  getTipoDocumentoPacientePorId: vi.fn(async () => ({}))
+  getTipoDocumentoPacientePorId: vi.fn(async () => ({})),
+  getExtrasFormulacionPorId: vi.fn(async () => ({}))
 }));
 
 const { query } = await import('../../config/db.js');
 const { listStock } = await import('../inventory.service.js');
-const { getDxPorIdMedFormulacion, getPrescriptorPorIdFormulacion, getTipoDocumentoPacientePorId } = await import('../formulacion-hs.service.js');
+const { getDxPorIdMedFormulacion, getPrescriptorPorIdFormulacion, getTipoDocumentoPacientePorId, getExtrasFormulacionPorId } = await import('../formulacion-hs.service.js');
 const {
   createPurchasesExport,
   createInventoryExport,
@@ -200,53 +201,100 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
     });
   });
 
-  // "Dispensación" corre sobre dispensacion_hs_control (el flujo real de
-  // HealthSphere), NUNCA sobre las tablas legacy dispensaciones/
-  // dispensaciones_detalle de un flujo manual que ya no se usa. Estas
-  // pruebas fijan que se consulte la tabla correcta y que el filtro de
-  // fecha use fecha_formulacion en la cabecera y fecha_hora en el detalle
-  // (las entregas reales), tal como getHistorialEntregas() distingue
-  // formulado de dispensado.
-  describe('createDispensingExport', () => {
-    it('consulta dispensacion_hs_control, no las tablas legacy de dispensaciones', async () => {
+  // "Dispensación" es un informe PROPIO (distinto de RIPS): mismo origen de
+  // datos (dispensacion_hs_control, cantidad_dispensada > 0) pero con sus
+  // propias variables — lote, laboratorio, código interno, cantidad
+  // pendiente/faltante (de la traza de auditoría), número de historia y
+  // especialidad del médico (de HealthSphere) — y solo se descarga en excel.
+  describe('createDispensingExport (informe propio, solo excel)', () => {
+    it('usa dispensacion_hs_control filtrando cantidad_dispensada > 0', async () => {
       await createDispensingExport('json', {}, 1);
 
-      const headerCall = query.mock.calls.find(([sql]) => sql.includes('FROM dispensacion_hs_control'));
-      expect(headerCall).toBeDefined();
-
-      const legacyCall = query.mock.calls.find(([sql]) => sql.includes('FROM dispensaciones d'));
-      expect(legacyCall).toBeUndefined();
-    });
-
-    it('el detalle de entregas viene de movimientos_inventario con referencia DISPENSACION_HS_CONTROL', async () => {
-      await createDispensingExport('json', {}, 1);
-
-      const detailCall = query.mock.calls.find(([sql]) => sql.includes('INNER JOIN dispensacion_hs_control c ON c.id = m.referencia_id'));
-      expect(detailCall[0]).toContain("m.referencia_tipo = 'DISPENSACION_HS_CONTROL'");
-      expect(detailCall[0]).toContain('ANULACION_DISPENSACION_HS');
-      expect(detailCall[0]).toContain('anulado');
-    });
-
-    it('aplica desde/hasta a fecha_formulacion en cabecera y a fecha_hora en el detalle', async () => {
-      await createDispensingExport('json', { desde: '2026-09-01', hasta: '2026-09-30', idSede: 3 }, 1);
-
-      const headerCall = query.mock.calls.find(([sql]) => sql.includes('FROM dispensacion_hs_control'));
-      expect(headerCall[0]).toContain('c.fecha_formulacion >= ?');
-      expect(headerCall[0]).toContain('c.fecha_formulacion <= ?');
-      expect(headerCall[1]).toEqual(['2026-09-01', '2026-09-30', 3]);
-
-      const detailCall = query.mock.calls.find(([sql]) => sql.includes('INNER JOIN dispensacion_hs_control c ON c.id = m.referencia_id'));
-      expect(detailCall[0]).toContain('m.fecha_hora >= ?');
-      expect(detailCall[0]).toContain('m.fecha_hora <= ?');
-      expect(detailCall[1]).toEqual(['2026-09-01 00:00:00', '2026-09-30 23:59:59', 3]);
+      const [sql, params] = query.mock.calls[0];
+      expect(sql).toContain('c.cantidad_dispensada > 0');
+      expect(sql).toContain('FROM dispensacion_hs_control c');
+      expect(params).toEqual([]);
     });
 
     it('acepta un string plano de search para no romper la página de Reportes vieja', async () => {
       await createDispensingExport('json', 'GLIFORMIN', 1);
 
-      const headerCall = query.mock.calls.find(([sql]) => sql.includes('FROM dispensacion_hs_control'));
-      expect(headerCall[0]).toContain('c.nombre_paciente LIKE ?');
-      expect(headerCall[1]).toEqual(['%GLIFORMIN%', '%GLIFORMIN%', '%GLIFORMIN%']);
+      const [sql, params] = query.mock.calls[0];
+      expect(sql).toContain('c.nombre_paciente LIKE ?');
+      expect(params).toEqual(['%GLIFORMIN%', '%GLIFORMIN%', '%GLIFORMIN%']);
+    });
+
+    it('formato excel: genera el archivo .xls', async () => {
+      const dataset = await createDispensingExport('excel', {}, 1);
+
+      expect(dataset.filename).toMatch(/\.xls$/);
+      expect(dataset.mimeType).toContain('application/vnd.ms-excel');
+    });
+
+    it('formato csv: rechazado — este informe solo soporta excel', async () => {
+      await expect(createDispensingExport('csv', {}, 1)).rejects.toThrow(/solo soporta formato excel/i);
+    });
+
+    it('formato pdf: rechazado — este informe solo soporta excel', async () => {
+      await expect(createDispensingExport('pdf', {}, 1)).rejects.toThrow(/solo soporta formato excel/i);
+    });
+
+    it('trae lote, laboratorio y código interno (sku) desde el maestro local', async () => {
+      query.mockResolvedValueOnce([
+        { id: 90, id_formulacion_hs: 1, id_med_formulacion_hs: 1, sku: 'DM55', laboratorio: 'ROCHE', lotes: 'G01103A, FMX0325' }
+      ]);
+
+      const dataset = await createDispensingExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(data.rows[0].codigo_interno).toBe('DM55');
+      expect(data.rows[0].laboratorio).toBe('ROCHE');
+      expect(data.rows[0].lote).toBe('G01103A, FMX0325');
+    });
+
+    it('cantidad_pendiente y cantidad_faltante salen del payload_json de la traza más reciente', async () => {
+      query.mockResolvedValueOnce([
+        {
+          id: 91,
+          id_formulacion_hs: 1,
+          id_med_formulacion_hs: 1,
+          payload_json: JSON.stringify({ cantidad_pendiente_antes: 90, cantidad_faltante: 60 })
+        }
+      ]);
+
+      const dataset = await createDispensingExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(data.rows[0].cantidad_pendiente).toBe(90);
+      expect(data.rows[0].cantidad_faltante).toBe(60);
+    });
+
+    it('sin traza de auditoría, cantidad_pendiente/cantidad_faltante quedan en null, no en 0', async () => {
+      query.mockResolvedValueOnce([
+        { id: 92, id_formulacion_hs: 1, id_med_formulacion_hs: 1, payload_json: null }
+      ]);
+
+      const dataset = await createDispensingExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(data.rows[0].cantidad_pendiente).toBeNull();
+      expect(data.rows[0].cantidad_faltante).toBeNull();
+    });
+
+    it('número de historia y especialidad del médico vienen de getExtrasFormulacionPorId', async () => {
+      query.mockResolvedValueOnce([
+        { id: 93, id_formulacion_hs: 286718, id_med_formulacion_hs: 1 }
+      ]);
+      getExtrasFormulacionPorId.mockResolvedValueOnce({
+        286718: { numero_formula: 316130, especialidad_medico: 'Medico general' }
+      });
+
+      const dataset = await createDispensingExport('json', {}, 1);
+      const data = JSON.parse(dataset.buffer.toString('utf8'));
+
+      expect(getExtrasFormulacionPorId).toHaveBeenCalledWith([286718]);
+      expect(data.rows[0].numero_formula).toBe(316130);
+      expect(data.rows[0].especialidad_medico).toBe('Medico general');
     });
   });
 
@@ -327,6 +375,34 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
       expect(sql).toContain('c.cantidad_dispensada > 0');
       expect(sql).toContain('FROM dispensacion_hs_control c');
       expect(params).toEqual([]);
+    });
+
+    // El usuario pidió que la descarga de RIPS sea en csv (no .xls) — es el
+    // archivo plano de datos, sin la hoja de Resumen.
+    it('formato csv: genera un archivo .csv con BOM UTF-8, encabezados y filas separadas por coma', async () => {
+      query.mockResolvedValueOnce([
+        { id: 80, id_med_formulacion_hs: 501900, documento_paciente: '1', nombre_paciente: 'Ana Pérez', sede: 'Sede Pereira', nombre_medicamento: 'Producto, con coma' }
+      ]);
+
+      const dataset = await createRipsAmExport('csv', {}, 1);
+
+      expect(dataset.filename).toMatch(/\.csv$/);
+      expect(dataset.mimeType).toContain('text/csv');
+      const text = dataset.buffer.toString('utf8');
+      expect(text.charCodeAt(0)).toBe(0xFEFF);
+      expect(text).toContain('Tipo ID,Id,Nombre completo,Contrato,Régimen,Sede');
+      expect(text).toContain('Ana Pérez');
+      expect(text).toContain('"Producto, con coma"');
+    });
+
+    it('formato csv: no incluye la hoja de Resumen, solo las filas de AM_Medicamentos', async () => {
+      query.mockResolvedValueOnce([{ id: 81, id_med_formulacion_hs: 501901 }]);
+
+      const dataset = await createRipsAmExport('csv', {}, 1);
+      const text = dataset.buffer.toString('utf8');
+
+      expect(text).not.toContain('ADVERTENCIA');
+      expect(text).not.toContain('Fecha de generación');
     });
 
     it('aplica desde/hasta sobre fecha_dispensacion', async () => {

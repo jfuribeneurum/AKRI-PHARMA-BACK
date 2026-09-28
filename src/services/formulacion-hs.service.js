@@ -636,6 +636,39 @@ export async function getPrescriptorPorIdFormulacion(idsFormulacion) {
   return result;
 }
 
+// Informe de Dispensación (distinto de RIPS): "Número de formula (#Historia)"
+// es el consecutivo de la ATENCIÓN a la que pertenece la formulación
+// (suhc_new_tbl_atencion.consecutivo, vía f.idAtencion) — el folio real que
+// usa HealthSphere para identificar la historia, no el id interno de la
+// formulación. "Especialidad del médico" viene de tbl_especialidadusuario
+// (puede tener más de una especialidad activa por usuario — se listan todas
+// separadas por " / ", en vez de inventar cuál es "la" principal).
+export async function getExtrasFormulacionPorId(idsFormulacion) {
+  const result = {};
+  const ids = [...new Set(idsFormulacion.filter(Boolean))];
+  if (!ids.length) return result;
+
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await hsQuery(
+    `SELECT f.Id, a.consecutivo,
+            GROUP_CONCAT(DISTINCT te.descripcion SEPARATOR ' / ') AS especialidades
+       FROM suhc_new_tbl_formulacion f
+       LEFT JOIN suhc_new_tbl_atencion a ON a.id = f.idAtencion
+       LEFT JOIN tbl_especialidadusuario eu ON eu.usuario = f.idEspecialista AND eu.estado = 1
+       LEFT JOIN tblespecialidades te ON te.id = eu.especialidad
+      WHERE f.Id IN (${placeholders})
+      GROUP BY f.Id, a.consecutivo`,
+    ids
+  );
+  for (const r of rows) {
+    result[r.Id] = {
+      numero_formula: r.consecutivo ?? null,
+      especialidad_medico: (r.especialidades ?? '').toString().trim() || null
+    };
+  }
+  return result;
+}
+
 // "Tipo ID" del paciente para RIPS: dispensacion_hs_control YA trae
 // documento_paciente/nombre_paciente (locales, suficientes para "Id" y
 // "Nombre completo"), pero NO guarda el tipo de documento — solo existe en
