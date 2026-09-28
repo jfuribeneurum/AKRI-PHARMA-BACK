@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 import { env } from './config/env.js';
 import { query } from './config/db.js';
+import { roleScope } from './middleware/role-scope.js';
 import { authRouter } from './routes/auth.routes.js';
 import { dashboardRouter } from './routes/dashboard.routes.js';
 import { productsRouter } from './routes/products.routes.js';
@@ -150,6 +151,7 @@ app.get('/api/ready', async (_req, res) => {
   }
 });
 
+app.use('/api', roleScope);
 app.use('/api/uploads', express.static(env.UPLOAD_DIR));
 app.use('/uploads', express.static(env.UPLOAD_DIR));
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
