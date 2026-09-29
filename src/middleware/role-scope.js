@@ -5,15 +5,10 @@ import { env } from '../config/env.js';
 // relativos a /api). Un rol que no está aquí (ej. ADMINISTRADOR) no se limita.
 // Debe mantenerse alineado con ROLE_ALLOWED_PATHS en el frontend
 // (src/app/core/role-scope.ts).
+// INFORMES: solo el informe de RIPS (y lo que la página necesita: sesión y
+// la lista de contratos del filtro). Cualquier otro informe queda cerrado.
 export const ROLE_API_SCOPES = {
-  INFORMES: ['/auth', '/reports', '/parametros/contrato/activos']
-};
-
-// Excepciones dentro del alcance permitido: prefijos que el rol no puede usar
-// aunque caigan bajo uno de sus ROLE_API_SCOPES. Alineado con
-// ROLE_HIDDEN_REPORTS en el frontend.
-export const ROLE_API_DENY = {
-  INFORMES: ['/reports/dispensing']
+  INFORMES: ['/auth', '/reports/rips-am', '/parametros/contrato/activos']
 };
 
 // Formatos (?format=) que un rol puede pedir en ciertos exports. Alineado con
@@ -30,12 +25,11 @@ export function isFormatAllowed(role, path, format) {
   return reglas[prefix].includes(String(format ?? '').toLowerCase());
 }
 
-const matchesPrefix =(path, prefix) => path === prefix || path.startsWith(`${prefix}/`);
+const matchesPrefix = (path, prefix) => path === prefix || path.startsWith(`${prefix}/`);
 
 export function isApiPathAllowed(role, path) {
   const scopes = ROLE_API_SCOPES[role];
   if (!scopes) return true;
-  if ((ROLE_API_DENY[role] ?? []).some((prefix) => matchesPrefix(path, prefix))) return false;
   return scopes.some((prefix) => matchesPrefix(path, prefix));
 }
 

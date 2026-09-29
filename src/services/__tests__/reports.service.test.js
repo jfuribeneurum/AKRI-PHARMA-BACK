@@ -190,14 +190,95 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
     it('aplica desde/hasta/id_sede en la consulta de ingresos', async () => {
       await createIngresosExport('json', { desde: '2026-09-01', hasta: '2026-09-30', idSede: 3 }, 1);
 
-      const headerCall = query.mock.calls.find(([sql]) => sql.includes('FROM ingresos i'));
-      expect(headerCall[0]).toContain('i.fecha_recepcion >= ?');
-      expect(headerCall[0]).toContain('i.fecha_recepcion <= ?');
-      expect(headerCall[0]).toContain('a.id_sede = ?');
-      expect(headerCall[1]).toEqual(['2026-09-01', '2026-09-30', 3]);
+      const call = query.mock.calls.find(([sql]) => sql.includes('FROM ingresos i'));
+      expect(call[0]).toContain('i.fecha_recepcion >= ?');
+      expect(call[0]).toContain('i.fecha_recepcion <= ?');
+      expect(call[0]).toContain('a.id_sede = ?');
+      expect(call[1]).toEqual(['2026-09-01', '2026-09-30', 3]);
+    });
+  });
 
-      const detailCall = query.mock.calls.find(([sql]) => sql.includes('FROM ingresos_items'));
-      expect(detailCall[1]).toEqual(['2026-09-01', '2026-09-30', 3]);
+  // "Ingresos": una fila por ítem con todos los datos del formulario de
+  // Ingresos Pharma repetidos (encabezado, sede, proveedor, medicamento,
+  // factura y totales).
+  describe('createIngresosExport — detalle por ítem', () => {
+    const base = {
+      id_ingreso: 10, referencia: 'ING-10', estado: 'recibido', fecha_recepcion: '28/09/2026',
+      numero_orden_compra: 'OC-5', sede: 'SEDE CALI', bodega: 'Almacén general', sede_direccion: 'Cra 1', sede_ciudad: 'Cali',
+      proveedor_nombre: 'PROV SA', proveedor_nit: '900', proveedor_contacto: 'Ana', proveedor_telefono: '300', proveedor_direccion: 'Cl 2',
+      prefijo_factura: 'FV', numero_factura: '1234', fecha_factura: '27/09/2026', observaciones: 'ok',
+      total_bruto: '300.00', total_descuento: '10.00', subtotal_neto: '290.00', total_iva: '0.00', total_ingreso: '290.00',
+      registrado_por: 'Admin', fecha_registro: null
+    };
+    const item = (over) => ({
+      ...base, id_item: 1, codigo: 'MX1', nombre: 'PRODUCTO', laboratorio: 'LAB', cantidad: '2', valor_unitario: '100.00',
+      lote: 'L1', fecha_vencimiento: '01/01/2028', registro_invima: 'INV', cum: '123', consecutivo_cum: '01', presentacion: 'CAJA',
+      iva: '0', descuento_pct: '5', descuento_valor: '10.00', temperatura: '2-8', cumple: 1, ...over
+    });
+
+    it('arma una sola consulta con join a ítems, almacén/sede y excluye DEV-', async () => {
+      await createIngresosExport('json', {}, 1);
+      const [sql] = query.mock.calls.find(([s]) => s.includes('FROM ingresos i'));
+      expect(sql).toContain('LEFT JOIN ingresos_items it');
+      expect(sql).toContain('LEFT JOIN sedes s ON s.id_sede = a.id_sede');
+      expect(sql).toContain("i.referencia NOT LIKE 'DEV-%'");
+    });
+
+    it('numera los ítems por ingreso, calcula valor total y el texto de cumplimiento', async () => {
+      query.mockResolvedValueOnce([
+        item({ id_item: 1, cumple: 1 }),
+        item({ id_item: 2, cantidad: '3', valor_unitario: '50.00', cumple: 0 }),
+        item({ id_item: 3, cumple: null }),
+        { ...item({ id_item: 7 }), id_ingreso: 11, referencia: 'ING-11' }
+      ]);
+      const file = await createIngresosExport('json', {}, 1);
+      const { rows, summary } = JSON.parse(file.buffer.toString());
+
+      expect(rows.map((r) => r.item_numero)).toEqual([1, 2, 3, 1]);
+      expect(rows[0].valor_total).toBe(200);
+      expect(rows[1].valor_total).toBe(150);
+      expect(rows.map((r) => r.cumplimiento)).toEqual(['Cumple', 'No cumple', 'Sin validar', 'Cumple']);
+      expect(rows[0]).toMatchObject({
+        referencia: 'ING-10', sede_direccion: 'Cra 1', sede_ciudad: 'Cali', proveedor_contacto: 'Ana',
+        registro_invima: 'INV', consecutivo_cum: '01', prefijo_factura: 'FV', total_items: 300,
+        subtotal: 290, impuestos_aplicados: 0, inc: 0, otros_costos: 0, total_otros_conceptos: 0, total_ingreso: 290
+      });
+      expect(summary).toMatchObject({ ingresos: 2, items: 4, sin_validar: 1, no_cumple: 1 });
+    });
+
+    it('cuenta ingresos por id aunque repitan consecutivo', async () => {
+      query.mockResolvedValueOnce([
+        item({ id_ingreso: 20, id_item: 1 }),
+        item({ id_ingreso: 21, id_item: 2 })
+      ]);
+      const file = await createIngresosExport('json', {}, 1);
+      const { rows, summary } = JSON.parse(file.buffer.toString());
+      expect(summary.ingresos).toBe(2);
+      expect(rows.map((r) => r.item_numero)).toEqual([1, 1]);
+    });
+
+    it('un ingreso sin ítems estructurados usa producto/cantidad/lote de la cabecera', async () => {
+      query.mockResolvedValueOnce([{ ...base, id_item: null, cab_producto: 'VIEJO', cab_cantidad: '4', cab_lote: 'LX', cab_fecha_vencimiento: '02/02/2027', cumple: null }]);
+      const file = await createIngresosExport('json', {}, 1);
+      const [row] = JSON.parse(file.buffer.toString()).rows;
+      expect(row).toMatchObject({ nombre: 'VIEJO', cantidad: 4, lote: 'LX', fecha_vencimiento: '02/02/2027' });
+    });
+
+    it('sin orden de compra muestra "Sin orden"', async () => {
+      query.mockResolvedValueOnce([item({ numero_orden_compra: null })]);
+      const file = await createIngresosExport('json', {}, 1);
+      expect(JSON.parse(file.buffer.toString()).rows[0].numero_orden_compra).toBe('Sin orden');
+    });
+
+    it('exporta csv con los encabezados del formulario y rechaza pdf', async () => {
+      query.mockResolvedValueOnce([item({})]);
+      const file = await createIngresosExport('csv', {}, 1);
+      const header = file.buffer.toString('utf8').replace(/^﻿/, '').split('\r\n')[0];
+      expect(header.startsWith('Consecutivo,Estado,Fecha recepción,Orden de compra,Sede,Bodega')).toBe(true);
+      expect(header).toContain('Registro INVIMA MX,CUM,Consecutivo CUM');
+      expect(header).toContain('Total ingreso');
+
+      await expect(createIngresosExport('pdf', {}, 1)).rejects.toThrow('excel o csv');
     });
   });
 
@@ -252,7 +333,28 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
       expect(data.rows[0].lote).toBe('G01103A, FMX0325');
     });
 
-    it('cantidad_pendiente y cantidad_faltante salen del payload_json de la traza más reciente', async () => {
+    it('una fila por entrega: lote de esa entrega y la traza de esa misma entrega (misma fecha_hora)', async () => {
+      await createDispensingExport('json', {}, 1);
+
+      const [sql] = query.mock.calls[0];
+      expect(sql).toContain("mv.tipo = 'salida_venta'");
+      expect(sql).toContain('e.lotes');
+      expect(sql).toContain('t.referencia_id = c.id');
+      expect(sql).toContain('t.fecha_hora BETWEEN e.fecha_hora - INTERVAL 2 SECOND AND e.fecha_hora + INTERVAL 2 SECOND');
+    });
+
+    it('cada entrega trae su propio pendiente/faltante', async () => {
+      query.mockResolvedValueOnce([
+        { id: 5, id_formulacion_hs: 1, id_med_formulacion_hs: 1, cantidad_dispensada: 1, lotes: 'L2', payload_json: { cantidad_pendiente_antes: 42, cantidad_faltante: 42 } },
+        { id: 5, id_formulacion_hs: 1, id_med_formulacion_hs: 1, cantidad_dispensada: 1, lotes: 'L1', payload_json: JSON.stringify({ cantidad_pendiente_antes: 43, cantidad_faltante: 42 }) }
+      ]);
+
+      const data = JSON.parse((await createDispensingExport('json', {}, 1)).buffer.toString('utf8'));
+
+      expect(data.rows.map((r) => [r.cantidad_dispensada_rips, r.lote, r.cantidad_pendiente])).toEqual([[1, 'L2', 42], [1, 'L1', 43]]);
+    });
+
+    it('cantidad_pendiente y cantidad_faltante salen del payload_json de la traza de la entrega', async () => {
       query.mockResolvedValueOnce([
         {
           id: 91,
@@ -405,13 +507,46 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
       expect(text).not.toContain('Fecha de generación');
     });
 
-    it('aplica desde/hasta sobre fecha_dispensacion', async () => {
+    it('aplica desde/hasta sobre la fecha de CADA entrega (no la última del control)', async () => {
       await createRipsAmExport('json', { desde: '2026-09-01', hasta: '2026-09-30' }, 1);
 
       const [sql, params] = query.mock.calls[0];
-      expect(sql).toContain('c.fecha_dispensacion >= ?');
-      expect(sql).toContain('c.fecha_dispensacion <= ?');
-      expect(params).toEqual(['2026-09-01 00:00:00', '2026-09-30 23:59:59']);
+      expect(sql).toContain('COALESCE(e.fecha_hora, c.fecha_dispensacion) >= ?');
+      expect(sql).toContain('COALESCE(e.fecha_hora, c.fecha_dispensacion) <= ?');
+      // Días de Colombia sobre hora UTC guardada: 01/09 00:00 COL = 01/09 05:00 UTC; 30/09 23:59:59 COL = 01/10 04:59:59 UTC.
+      expect(params).toEqual(['2026-09-01 05:00:00', '2026-10-01 04:59:59']);
+    });
+
+    // Una fila por entrega: dispensacion_hs_control acumula todas las
+    // entregas en una sola fila; cada entrega real es un movimiento
+    // salida_venta (agrupado por fecha_hora si sacó de varios lotes), sin
+    // los movimientos anulados.
+    it('arma una fila por entrega desde los movimientos de salida, sin las anuladas', async () => {
+      await createRipsAmExport('json', {}, 1);
+
+      const [sql] = query.mock.calls[0];
+      expect(sql).toContain("mv.tipo = 'salida_venta'");
+      expect(sql).toContain("anul.referencia_tipo = 'ANULACION_DISPENSACION_HS' AND anul.referencia_id = mv.id_movimiento");
+      expect(sql).toContain('GROUP BY mv.referencia_id, mv.fecha_hora');
+      expect(sql).toContain('COALESCE(e.cantidad, c.cantidad_dispensada) AS cantidad_dispensada');
+      expect(sql).toContain('COALESCE(e.fecha_hora, c.fecha_dispensacion) AS fecha_dispensacion');
+      // Controles sin ninguna salida (registros antiguos): se deja la fila acumulada.
+      expect(sql).toContain('(e.id_control IS NOT NULL OR conmov.referencia_id IS NULL)');
+      // La sede es la del almacén de ESA entrega.
+      expect(sql).toContain('LEFT JOIN almacenes almref ON almref.id_almacen = e.id_almacen');
+    });
+
+    it('dos entregas del mismo medicamento salen como dos líneas con su propia fecha y cantidad', async () => {
+      query.mockResolvedValueOnce([
+        { id: 1, id_formulacion_hs: 9, id_med_formulacion_hs: 90, cantidad_dispensada: 1, fecha_dispensacion: new Date(2026, 8, 8, 10, 0, 0), nombre_medicamento: 'FACTOR VIII' },
+        { id: 1, id_formulacion_hs: 9, id_med_formulacion_hs: 90, cantidad_dispensada: 1, fecha_dispensacion: new Date(2026, 8, 7, 9, 30, 0), nombre_medicamento: 'FACTOR VIII' }
+      ]);
+      const file = await createRipsAmExport('json', {}, 1);
+      const { rows } = JSON.parse(file.buffer.toString());
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.cantidad_dispensada_rips)).toEqual([1, 1]);
+      // Guardadas en UTC (10:00 / 09:30) → hora de Colombia (05:00 / 04:30).
+      expect(rows.map((r) => r.fecha_dispensacion)).toEqual(['08/09/2026 05:00:00', '07/09/2026 04:30:00']);
     });
 
     // mysql2 devuelve DATETIME como objeto Date de JS — sin formatear, al
@@ -426,7 +561,22 @@ describe('reports.service — filtros de Informes (Fecha / Sede-Bodega)', () => 
       const dataset = await createRipsAmExport('json', {}, 1);
       const data = JSON.parse(dataset.buffer.toString('utf8'));
 
-      expect(data.rows[0].fecha_dispensacion).toBe('22/09/2026 23:36:20');
+      // 23:36:20 guardado en UTC = 18:36:20 en Colombia.
+      expect(data.rows[0].fecha_dispensacion).toBe('22/09/2026 18:36:20');
+    });
+
+    // Caso real reportado: entrega de las 14:03 (hora Colombia, la que muestra
+    // "Soportes de entrega") guardada por la BD en UTC como 19:03; y una de las
+    // 19:25 del 14/09 guardada como 15/09 00:25 — debe salir el 14/09, no el 15.
+    it('muestra la hora de Colombia, igual que Soportes de entrega (la BD guarda UTC)', async () => {
+      query.mockResolvedValueOnce([
+        { id: 71, id_med_formulacion_hs: 1, fecha_dispensacion: new Date(2026, 8, 25, 19, 3, 21) },
+        { id: 72, id_med_formulacion_hs: 1, fecha_dispensacion: new Date(2026, 8, 15, 0, 25, 13) }
+      ]);
+
+      const data = JSON.parse((await createRipsAmExport('json', {}, 1)).buffer.toString('utf8'));
+
+      expect(data.rows.map((r) => r.fecha_dispensacion)).toEqual(['25/09/2026 14:03:21', '14/09/2026 19:25:13']);
     });
 
     // Filtro multi-selección "Contratos" en Informes: mismas opciones que el

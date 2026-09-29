@@ -178,17 +178,43 @@ function escapePdfText(value) {
 // GMT-0500 (hora estándar de Colombia)"). Se formatea a "DD/MM/AAAA HH:mm:ss"
 // antes de exportar. Acepta también el string que ya devuelve el driver
 // cuando la columna es DATE (no DATETIME).
+// La base de datos corre en UTC: los DATETIME que llena NOW() (fecha de un
+// movimiento, de una dispensación, de registro de un ingreso) quedan guardados
+// en hora UTC, 5 horas por delante de Colombia (una entrega de las 14:03 queda
+// como 19:03). mysql2 entrega ese valor "ingenuo" como un Date armado en la
+// zona horaria del proceso Node, así que se leen sus componentes tal cual
+// (getHours() etc. = lo guardado), se interpretan como UTC y se pasan a hora
+// de Colombia (UTC-5 fijo, sin horario de verano) — funciona igual sin
+// importar la zona horaria del servidor.
+const OFFSET_COLOMBIA_MS = 5 * 60 * 60 * 1000;
+
 function formatFechaHora(value) {
   if (value == null || value === '') return null;
-  const fecha = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(fecha.getTime())) return String(value);
-  const dd = String(fecha.getDate()).padStart(2, '0');
-  const mm = String(fecha.getMonth() + 1).padStart(2, '0');
-  const yyyy = fecha.getFullYear();
-  const hh = String(fecha.getHours()).padStart(2, '0');
-  const mi = String(fecha.getMinutes()).padStart(2, '0');
-  const ss = String(fecha.getSeconds()).padStart(2, '0');
+  const guardada = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(guardada.getTime())) return String(value);
+  const fecha = new Date(Date.UTC(
+    guardada.getFullYear(), guardada.getMonth(), guardada.getDate(),
+    guardada.getHours(), guardada.getMinutes(), guardada.getSeconds()
+  ) - OFFSET_COLOMBIA_MS);
+  const dd = String(fecha.getUTCDate()).padStart(2, '0');
+  const mm = String(fecha.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = fecha.getUTCFullYear();
+  const hh = String(fecha.getUTCHours()).padStart(2, '0');
+  const mi = String(fecha.getUTCMinutes()).padStart(2, '0');
+  const ss = String(fecha.getUTCSeconds()).padStart(2, '0');
   return `${dd}/${mm}/${yyyy} ${hh}:${mi}:${ss}`;
+}
+
+// Filtro Desde/Hasta en días de Colombia sobre un DATETIME guardado en UTC:
+// el día D en Colombia va de D 05:00:00 UTC a D+1 04:59:59 UTC.
+function inicioDiaColombiaUtc(fecha) {
+  return `${fecha} 05:00:00`;
+}
+
+function finDiaColombiaUtc(fecha) {
+  const siguiente = new Date(`${fecha}T00:00:00Z`);
+  siguiente.setUTCDate(siguiente.getUTCDate() + 1);
+  return `${siguiente.toISOString().slice(0, 10)} 04:59:59`;
 }
 
 function pad(value, width, align = 'left') {
@@ -1748,10 +1774,265 @@ function buildActasPdf(data) {
   });
 }
 
+// Informe "Ingresos": una fila por ítem recibido, con TODOS los datos del
+// formulario de Ingresos Pharma repetidos en cada fila (encabezado, sede,
+// proveedor, detalle, datos del medicamento, datos del ingreso y totales),
+// a pedido explícito del usuario. Excluye devoluciones (DEV-), que tienen
+// su propio informe.
+//
+// Del recuadro de totales del formulario: "INC", "Otros costos" y "Total
+// otros conceptos" hoy están fijos en 0 en la pantalla (no se capturan ni se
+// guardan) — se exportan en 0 para calzar con lo que ve el usuario.
+// "Impuestos aplicados" es el mismo IVA (totalIvaOc en el frontend).
+// Dirección/Ciudad de la sede salen de `sedes` vía el almacén del ingreso
+// (igual que las carga la pantalla), no se guardan en `ingresos`.
+async function fetchIngresosDetalladoDataset({ search = '', desde = null, hasta = null, idSede = null } = {}) {
+  const filter = String(search ?? '').trim();
+  const like = `%${filter}%`;
+
+  const conditions = [`i.referencia NOT LIKE 'DEV-%'`];
+  const params = [];
+  if (filter) {
+    conditions.push(`(i.referencia LIKE ? OR i.proveedor_nombre LIKE ? OR i.numero_factura LIKE ? OR i.numero_orden_compra LIKE ?)`);
+    params.push(like, like, like, like);
+  }
+  if (desde) {
+    conditions.push('i.fecha_recepcion >= ?');
+    params.push(desde);
+  }
+  if (hasta) {
+    conditions.push('i.fecha_recepcion <= ?');
+    params.push(hasta);
+  }
+  if (idSede) {
+    conditions.push('a.id_sede = ?');
+    params.push(idSede);
+  }
+
+  // LEFT JOIN a ingresos_items: un ingreso antiguo sin ítems estructurados
+  // (solo producto/cantidad/lote en la cabecera) igual sale como una fila.
+  const rows = await query(
+    `SELECT
+        i.id_ingreso,
+        i.referencia,
+        i.estado,
+        DATE_FORMAT(i.fecha_recepcion, '%d/%m/%Y') AS fecha_recepcion,
+        i.numero_orden_compra,
+        i.sede,
+        i.bodega,
+        s.direccion AS sede_direccion,
+        s.ciudad AS sede_ciudad,
+        i.proveedor_nombre,
+        i.proveedor_nit,
+        i.proveedor_contacto,
+        i.proveedor_telefono,
+        i.proveedor_direccion,
+        i.producto AS cab_producto,
+        i.cantidad AS cab_cantidad,
+        i.lote AS cab_lote,
+        DATE_FORMAT(i.fecha_vencimiento, '%d/%m/%Y') AS cab_fecha_vencimiento,
+        it.id_item,
+        it.codigo,
+        it.nombre,
+        it.laboratorio,
+        it.cantidad,
+        it.valor_unitario,
+        it.lote,
+        DATE_FORMAT(it.fecha_vencimiento, '%d/%m/%Y') AS fecha_vencimiento,
+        it.registro_invima,
+        it.cum,
+        it.consecutivo_cum,
+        it.presentacion,
+        it.iva,
+        it.descuento_pct,
+        it.descuento_valor,
+        it.temperatura,
+        it.cumple,
+        i.prefijo_factura,
+        i.numero_factura,
+        DATE_FORMAT(i.fecha_factura, '%d/%m/%Y') AS fecha_factura,
+        i.observaciones,
+        i.total_bruto,
+        i.total_descuento,
+        i.subtotal_neto,
+        i.total_iva,
+        i.total_ingreso,
+        u.nombre_completo AS registrado_por,
+        i.fecha_ingreso AS fecha_registro
+     FROM ingresos i
+     LEFT JOIN ingresos_items it ON it.id_ingreso = i.id_ingreso
+     LEFT JOIN almacenes a ON a.id_almacen = i.id_almacen
+     LEFT JOIN sedes s ON s.id_sede = a.id_sede
+     LEFT JOIN usuarios u ON u.id_usuario = i.creado_por
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY i.fecha_recepcion DESC, i.id_ingreso DESC, it.id_item ASC`,
+    params
+  );
+
+  const itemPorIngreso = new Map();
+  const mapped = rows.map((row) => {
+    const n = (itemPorIngreso.get(row.id_ingreso) ?? 0) + 1;
+    itemPorIngreso.set(row.id_ingreso, n);
+    const sinItem = row.id_item == null;
+    const cantidad = toNumber(sinItem ? row.cab_cantidad : row.cantidad);
+    const valorUnitario = toNumber(row.valor_unitario);
+    return {
+      // Solo para el resumen (no es columna): hay consecutivos repetidos en
+      // varios ingresos, así que se cuentan por id, no por referencia.
+      id_ingreso: row.id_ingreso,
+      referencia: row.referencia,
+      estado: row.estado,
+      fecha_recepcion: row.fecha_recepcion,
+      numero_orden_compra: row.numero_orden_compra || 'Sin orden',
+      sede: row.sede,
+      bodega: row.bodega,
+      sede_direccion: row.sede_direccion,
+      sede_ciudad: row.sede_ciudad,
+      proveedor_nombre: row.proveedor_nombre,
+      proveedor_nit: row.proveedor_nit,
+      proveedor_contacto: row.proveedor_contacto,
+      proveedor_telefono: row.proveedor_telefono,
+      proveedor_direccion: row.proveedor_direccion,
+      item_numero: n,
+      codigo: row.codigo,
+      nombre: sinItem ? row.cab_producto : row.nombre,
+      laboratorio: row.laboratorio,
+      cantidad,
+      valor_unitario: valorUnitario,
+      lote: sinItem ? row.cab_lote : row.lote,
+      fecha_vencimiento: sinItem ? row.cab_fecha_vencimiento : row.fecha_vencimiento,
+      valor_total: Number((cantidad * valorUnitario).toFixed(2)),
+      registro_invima: row.registro_invima,
+      cum: row.cum,
+      consecutivo_cum: row.consecutivo_cum,
+      presentacion: row.presentacion,
+      iva: toNumber(row.iva),
+      descuento_pct: toNumber(row.descuento_pct),
+      descuento_valor: toNumber(row.descuento_valor),
+      temperatura: row.temperatura,
+      cumplimiento: row.cumple == null ? 'Sin validar' : (Number(row.cumple) ? 'Cumple' : 'No cumple'),
+      prefijo_factura: row.prefijo_factura,
+      numero_factura: row.numero_factura,
+      fecha_factura: row.fecha_factura,
+      observaciones: row.observaciones,
+      total_items: toNumber(row.total_bruto),
+      total_descuento: toNumber(row.total_descuento),
+      subtotal: toNumber(row.subtotal_neto),
+      total_iva: toNumber(row.total_iva),
+      inc: 0,
+      impuestos_aplicados: toNumber(row.total_iva),
+      otros_costos: 0,
+      total_otros_conceptos: 0,
+      total_ingreso: toNumber(row.total_ingreso),
+      registrado_por: row.registrado_por,
+      fecha_registro: formatFechaHora(row.fecha_registro)
+    };
+  });
+
+  return { filter, rows: mapped };
+}
+
+function buildIngresosDetalladoReport(filter, rows) {
+  return {
+    generatedAt: new Date().toISOString(),
+    filter,
+    summary: {
+      ingresos: new Set(rows.map((row) => row.id_ingreso)).size,
+      items: rows.length,
+      anulados: new Set(rows.filter((row) => row.estado === 'anulado').map((row) => row.id_ingreso)).size,
+      sin_validar: countWhere(rows, (row) => row.cumplimiento === 'Sin validar'),
+      no_cumple: countWhere(rows, (row) => row.cumplimiento === 'No cumple')
+    },
+    rows
+  };
+}
+
+const INGRESOS_DETALLADO_COLUMNS = [
+  // Encabezado
+  { key: 'referencia', label: 'Consecutivo', width: 90, type: 'string' },
+  { key: 'estado', label: 'Estado', width: 90, type: 'string' },
+  { key: 'fecha_recepcion', label: 'Fecha recepción', width: 100, type: 'string' },
+  { key: 'numero_orden_compra', label: 'Orden de compra', width: 110, type: 'string' },
+  // Datos de la sede
+  { key: 'sede', label: 'Sede', width: 150, type: 'string' },
+  { key: 'bodega', label: 'Bodega', width: 150, type: 'string' },
+  { key: 'sede_direccion', label: 'Dirección sede', width: 180, type: 'string' },
+  { key: 'sede_ciudad', label: 'Ciudad', width: 100, type: 'string' },
+  // Datos del proveedor
+  { key: 'proveedor_nombre', label: 'Proveedor', width: 200, type: 'string' },
+  { key: 'proveedor_nit', label: 'NIT', width: 100, type: 'string' },
+  { key: 'proveedor_contacto', label: 'Contacto', width: 140, type: 'string' },
+  { key: 'proveedor_telefono', label: 'Teléfono', width: 100, type: 'string' },
+  { key: 'proveedor_direccion', label: 'Dirección proveedor', width: 180, type: 'string' },
+  // Detalle
+  { key: 'item_numero', label: '#', width: 40, type: 'number' },
+  { key: 'codigo', label: 'Código', width: 90, type: 'string' },
+  { key: 'nombre', label: 'Nombre', width: 240, type: 'string' },
+  { key: 'laboratorio', label: 'Laboratorio', width: 150, type: 'string' },
+  { key: 'cantidad', label: 'Cantidad', width: 80, type: 'number' },
+  { key: 'valor_unitario', label: 'Valor unitario', width: 100, type: 'number' },
+  { key: 'lote', label: 'Lote', width: 100, type: 'string' },
+  { key: 'fecha_vencimiento', label: 'Vencimiento', width: 100, type: 'string' },
+  { key: 'valor_total', label: 'Valor total', width: 110, type: 'number' },
+  // Datos del medicamento
+  { key: 'registro_invima', label: 'Registro INVIMA MX', width: 130, type: 'string' },
+  { key: 'cum', label: 'CUM', width: 100, type: 'string' },
+  { key: 'consecutivo_cum', label: 'Consecutivo CUM', width: 90, type: 'string' },
+  { key: 'presentacion', label: 'Presentación', width: 150, type: 'string' },
+  { key: 'iva', label: 'IVA (%)', width: 60, type: 'number' },
+  { key: 'descuento_pct', label: 'Descuento (%)', width: 80, type: 'number' },
+  { key: 'descuento_valor', label: 'Descuento ($)', width: 100, type: 'number' },
+  { key: 'temperatura', label: 'Temperatura', width: 90, type: 'string' },
+  { key: 'cumplimiento', label: 'Cumplimiento', width: 90, type: 'string' },
+  // Datos del ingreso
+  { key: 'prefijo_factura', label: 'Prefijo', width: 70, type: 'string' },
+  { key: 'numero_factura', label: 'Número factura', width: 100, type: 'string' },
+  { key: 'fecha_factura', label: 'Fecha factura', width: 100, type: 'string' },
+  { key: 'observaciones', label: 'Observaciones', width: 240, type: 'string' },
+  // Totales del ingreso (se repiten en cada ítem del mismo ingreso)
+  { key: 'total_items', label: 'Total items', width: 110, type: 'number' },
+  { key: 'total_descuento', label: 'Total descuento', width: 110, type: 'number' },
+  { key: 'subtotal', label: 'Sub-total', width: 110, type: 'number' },
+  { key: 'total_iva', label: 'IVA', width: 100, type: 'number' },
+  { key: 'inc', label: 'INC', width: 80, type: 'number' },
+  { key: 'impuestos_aplicados', label: 'Impuestos aplicados', width: 110, type: 'number' },
+  { key: 'otros_costos', label: 'Otros costos', width: 90, type: 'number' },
+  { key: 'total_otros_conceptos', label: 'Total otros conceptos', width: 110, type: 'number' },
+  { key: 'total_ingreso', label: 'Total ingreso', width: 120, type: 'number' },
+  // Auditoría
+  { key: 'registrado_por', label: 'Registrado por', width: 160, type: 'string' },
+  { key: 'fecha_registro', label: 'Fecha de registro', width: 130, type: 'string' }
+];
+
+function buildIngresosDetalladoExcel(data) {
+  return buildExcelWorkbook([
+    {
+      name: 'Resumen',
+      columns: [
+        { key: 'metrica', label: 'Métrica', width: 260, type: 'string' },
+        { key: 'valor', label: 'Valor', width: 200, type: 'string' }
+      ],
+      rows: [
+        { metrica: 'Fecha de generación', valor: data.generatedAt },
+        { metrica: 'Filtro aplicado', valor: data.filter || 'Sin filtro' },
+        { metrica: 'Ingresos', valor: data.summary.ingresos },
+        { metrica: 'Ítems', valor: data.summary.items },
+        { metrica: 'Ingresos anulados (incluidos, ver columna Estado)', valor: data.summary.anulados },
+        { metrica: 'Ítems sin validar cumplimiento', valor: data.summary.sin_validar },
+        { metrica: 'Ítems que no cumplen', valor: data.summary.no_cumple }
+      ]
+    },
+    { name: 'Ingresos', columns: INGRESOS_DETALLADO_COLUMNS, rows: data.rows }
+  ]);
+}
+
 export async function createIngresosExport(format, params = {}, userId = null) {
   const normalizedFormat = normalizeFormat(format);
-  const dataset = await fetchIngresosDataset({ ...params, soloDevoluciones: false });
-  const data = buildIngresosReport(dataset.filter, dataset.headers, dataset.details);
+  if (!['json', 'excel', 'csv'].includes(normalizedFormat)) {
+    throw new HttpError(400, 'Este informe solo soporta formato excel o csv.');
+  }
+  const dataset = await fetchIngresosDetalladoDataset(params);
+  const data = buildIngresosDetalladoReport(dataset.filter, dataset.rows);
   const fileBase = `akripharmacy-ingresos-${timestampForFile()}`;
 
   return finalizeExport({
@@ -1761,8 +2042,8 @@ export async function createIngresosExport(format, params = {}, userId = null) {
     submodulo: 'INGRESOS',
     descripcion: `Exportación de ingresos en formato ${normalizedFormat}`,
     userId,
-    excelBuilder: buildIngresosExcel,
-    pdfBuilder: (d) => buildIngresosPdf(d, 'INGRESOS')
+    excelBuilder: buildIngresosDetalladoExcel,
+    csvBuilder: (d) => buildCsv(INGRESOS_DETALLADO_COLUMNS, d.rows)
   });
 }
 
@@ -3468,23 +3749,63 @@ function codigoHabilitacionPorSede(nombreSede) {
   return null;
 }
 
-async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idSede = null, contratos = [] } = {}) {
+// Una fila por ENTREGA (a pedido explícito de la farmacia): dispensacion_hs_control
+// guarda UNA sola fila por medicamento de la formulación, que se sobrescribe
+// en cada entrega parcial (acumula la cantidad y deja la fecha de la última).
+// Cada entrega real es un movimiento `salida_venta` referenciado a ese
+// control, con su fecha/hora, cantidad, lote y almacén exactos. Una entrega
+// que sacó de varios lotes genera varios movimientos con la MISMA fecha_hora,
+// por eso se agrupa por (control, fecha_hora). Las entregas anuladas quedan
+// fuera: la anulación deja un `devolucion_venta` con referencia_tipo
+// ANULACION_DISPENSACION_HS apuntando al id del movimiento anulado.
+const ENTREGAS_DISPENSACION_SQL = `
+  SELECT
+    mv.referencia_id AS id_control,
+    mv.fecha_hora,
+    SUM(mv.cantidad) AS cantidad,
+    GROUP_CONCAT(DISTINCT l.numero_lote ORDER BY l.numero_lote SEPARATOR ', ') AS lotes,
+    MIN(mv.id_almacen_origen) AS id_almacen
+  FROM movimientos_inventario mv
+  LEFT JOIN lotes l ON l.id_lote = mv.id_lote
+  WHERE mv.tipo = 'salida_venta'
+    AND mv.referencia_tipo = 'DISPENSACION_HS_CONTROL'
+    AND NOT EXISTS (
+      SELECT 1 FROM movimientos_inventario anul
+      WHERE anul.referencia_tipo = 'ANULACION_DISPENSACION_HS' AND anul.referencia_id = mv.id_movimiento
+    )
+  GROUP BY mv.referencia_id, mv.fecha_hora`;
+
+// Controles con alguna salida registrada (anulada o no). Los que no tienen
+// ninguna son registros de los primeros días del sistema, anteriores a que la
+// dispensación moviera inventario: para esos se deja la fila acumulada del
+// control tal cual (no hay de dónde partirla por entrega).
+const CONTROLES_CON_SALIDAS_SQL = `
+  SELECT DISTINCT referencia_id
+  FROM movimientos_inventario
+  WHERE tipo = 'salida_venta' AND referencia_tipo = 'DISPENSACION_HS_CONTROL'`;
+
+// Condiciones comunes a RIPS y Dispensación sobre la fila por entrega
+// (alias c = control, e = entrega, almref = almacén de la entrega).
+function entregasConditions({ search = '', desde = null, hasta = null, idSede = null, contratos = [] }) {
   const filter = String(search ?? '').trim();
   const wildcard = `%${filter}%`;
 
-  const conditions = ['c.cantidad_dispensada > 0'];
+  const conditions = [
+    'c.cantidad_dispensada > 0',
+    '(e.id_control IS NOT NULL OR conmov.referencia_id IS NULL)'
+  ];
   const params = [];
   if (filter) {
     conditions.push(`(c.nombre_paciente LIKE ? OR c.documento_paciente LIKE ? OR c.nombre_medicamento LIKE ?)`);
     params.push(wildcard, wildcard, wildcard);
   }
   if (desde) {
-    conditions.push('c.fecha_dispensacion >= ?');
-    params.push(`${desde} 00:00:00`);
+    conditions.push('COALESCE(e.fecha_hora, c.fecha_dispensacion) >= ?');
+    params.push(inicioDiaColombiaUtc(desde));
   }
   if (hasta) {
-    conditions.push('c.fecha_dispensacion <= ?');
-    params.push(`${hasta} 23:59:59`);
+    conditions.push('COALESCE(e.fecha_hora, c.fecha_dispensacion) <= ?');
+    params.push(finDiaColombiaUtc(hasta));
   }
   if (idSede) {
     conditions.push('almref.id_sede = ?');
@@ -3497,7 +3818,17 @@ async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idS
     conditions.push(`c.contrato IN (${contratosLimpios.map(() => '?').join(',')})`);
     params.push(...contratosLimpios);
   }
-  const where = `WHERE ${conditions.join(' AND ')}`;
+  return { filter, where: `WHERE ${conditions.join(' AND ')}`, params };
+}
+
+const ENTREGAS_JOINS_SQL = `
+     LEFT JOIN (${ENTREGAS_DISPENSACION_SQL}) e ON e.id_control = c.id
+     LEFT JOIN (${CONTROLES_CON_SALIDAS_SQL}) conmov ON conmov.referencia_id = c.id
+     LEFT JOIN almacenes almref ON almref.id_almacen = e.id_almacen
+     LEFT JOIN sedes sedref ON sedref.id_sede = almref.id_sede`;
+
+async function fetchRipsAmDataset(params = {}) {
+  const { filter, where, params: sqlParams } = entregasConditions(params);
 
   const rows = await query(
     `SELECT
@@ -3508,8 +3839,8 @@ async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idS
         c.documento_paciente,
         c.nombre_paciente,
         c.nombre_medicamento,
-        c.cantidad_dispensada,
-        c.fecha_dispensacion,
+        COALESCE(e.cantidad, c.cantidad_dispensada) AS cantidad_dispensada,
+        COALESCE(e.fecha_hora, c.fecha_dispensacion) AS fecha_dispensacion,
         c.contrato,
         c.regimen,
         p.cum,
@@ -3520,30 +3851,20 @@ async function fetchRipsAmDataset({ search = '', desde = null, hasta = null, idS
         p.unidad_medida,
         p.precio_venta,
         ff.nombre AS forma_farmaceutica,
-        ROUND(c.cantidad_dispensada * COALESCE(p.precio_venta, 0), 2) AS valor_total,
+        ROUND(COALESCE(e.cantidad, c.cantidad_dispensada) * COALESCE(p.precio_venta, 0), 2) AS valor_total,
         sedref.nombre AS sede
      FROM dispensacion_hs_control c
      LEFT JOIN productos p ON p.id_producto = c.id_producto
      LEFT JOIN formas_farmaceuticas ff ON ff.id_forma = p.id_forma
-     LEFT JOIN (
-       SELECT m1.referencia_id, m1.id_almacen_origen
-       FROM movimientos_inventario m1
-       INNER JOIN (
-         SELECT referencia_id, MAX(fecha_hora) AS max_fecha
-         FROM movimientos_inventario
-         WHERE referencia_tipo = 'DISPENSACION_HS_CONTROL'
-         GROUP BY referencia_id
-       ) mx ON mx.referencia_id = m1.referencia_id AND mx.max_fecha = m1.fecha_hora
-       WHERE m1.referencia_tipo = 'DISPENSACION_HS_CONTROL'
-       GROUP BY m1.referencia_id, m1.id_almacen_origen
-     ) movref_almacen ON movref_almacen.referencia_id = c.id
-     LEFT JOIN almacenes almref ON almref.id_almacen = movref_almacen.id_almacen_origen
-     LEFT JOIN sedes sedref ON sedref.id_sede = almref.id_sede
+     ${ENTREGAS_JOINS_SQL}
      ${where}
-     ORDER BY c.fecha_dispensacion DESC`,
-    params
+     ORDER BY COALESCE(e.fecha_hora, c.fecha_dispensacion) DESC, c.id`,
+    sqlParams
   );
+  return enrichRipsAmRows(filter, rows);
+}
 
+async function enrichRipsAmRows(filter, rows) {
   // El CIE-10 solo existe en HealthSphere (texto libre "CODIGO-Descripción"
   // en fm.dx), nunca localmente — se trae en un segundo viaje (bases
   // distintas, no se puede hacer JOIN directo) y se cruza por
@@ -3778,37 +4099,12 @@ export async function createRipsAmExport(format, params = {}, userId = null) {
 // (una misma fila de control puede tener varias entregas parciales en su
 // historial). Filas sin ninguna traza (ej. datos migrados antes de este
 // registro) quedan en null, no en 0 — no inventar que no falta nada.
-async function fetchDispensacionDetalladaDataset({ search = '', desde = null, hasta = null, idSede = null, contratos = [] } = {}) {
-  const filter = String(search ?? '').trim();
-  const wildcard = `%${filter}%`;
+async function fetchDispensacionDetalladaDataset(params = {}) {
+  const { filter, where, params: sqlParams } = entregasConditions(params);
 
-  const conditions = ['c.cantidad_dispensada > 0'];
-  const params = [];
-  if (filter) {
-    conditions.push(`(c.nombre_paciente LIKE ? OR c.documento_paciente LIKE ? OR c.nombre_medicamento LIKE ?)`);
-    params.push(wildcard, wildcard, wildcard);
-  }
-  if (desde) {
-    conditions.push('c.fecha_dispensacion >= ?');
-    params.push(`${desde} 00:00:00`);
-  }
-  if (hasta) {
-    conditions.push('c.fecha_dispensacion <= ?');
-    params.push(`${hasta} 23:59:59`);
-  }
-  if (idSede) {
-    conditions.push('almref.id_sede = ?');
-    params.push(idSede);
-  }
-  const contratosLimpios = (Array.isArray(contratos) ? contratos : [contratos])
-    .map((c) => String(c ?? '').trim())
-    .filter(Boolean);
-  if (contratosLimpios.length) {
-    conditions.push(`c.contrato IN (${contratosLimpios.map(() => '?').join(',')})`);
-    params.push(...contratosLimpios);
-  }
-  const where = `WHERE ${conditions.join(' AND ')}`;
-
+  // Pendiente/faltante de CADA entrega: la traza de esa entrega se registra
+  // junto con su movimiento, a la misma hora (a veces 1 s de diferencia por
+  // caer en el cambio de segundo) — se toma la traza más cercana en ±2 s.
   const rows = await query(
     `SELECT
         c.id,
@@ -3818,54 +4114,33 @@ async function fetchDispensacionDetalladaDataset({ search = '', desde = null, ha
         c.documento_paciente,
         c.nombre_paciente,
         c.nombre_medicamento,
-        c.cantidad_dispensada,
-        c.fecha_dispensacion,
+        COALESCE(e.cantidad, c.cantidad_dispensada) AS cantidad_dispensada,
+        COALESCE(e.fecha_hora, c.fecha_dispensacion) AS fecha_dispensacion,
         c.contrato,
         c.regimen,
         p.cum,
         p.consecutivo_cum,
         p.sku,
         lab.nombre AS laboratorio,
-        loteref.lotes,
-        trz.payload_json,
+        e.lotes,
+        (
+          SELECT t.payload_json
+          FROM procesos_terminados_trazabilidad t
+          WHERE t.referencia_tipo = 'DISPENSACION_HS_CONTROL'
+            AND t.subproceso = 'DISPENSAR_MEDICAMENTO_HS'
+            AND t.referencia_id = c.id
+            AND t.fecha_hora BETWEEN e.fecha_hora - INTERVAL 2 SECOND AND e.fecha_hora + INTERVAL 2 SECOND
+          ORDER BY ABS(TIMESTAMPDIFF(SECOND, t.fecha_hora, e.fecha_hora)), t.id_traza DESC
+          LIMIT 1
+        ) AS payload_json,
         sedref.nombre AS sede
      FROM dispensacion_hs_control c
      LEFT JOIN productos p ON p.id_producto = c.id_producto
      LEFT JOIN laboratorios lab ON lab.id_laboratorio = p.id_laboratorio
-     LEFT JOIN (
-       SELECT m1.referencia_id, m1.id_almacen_origen
-       FROM movimientos_inventario m1
-       INNER JOIN (
-         SELECT referencia_id, MAX(fecha_hora) AS max_fecha
-         FROM movimientos_inventario
-         WHERE referencia_tipo = 'DISPENSACION_HS_CONTROL'
-         GROUP BY referencia_id
-       ) mx ON mx.referencia_id = m1.referencia_id AND mx.max_fecha = m1.fecha_hora
-       WHERE m1.referencia_tipo = 'DISPENSACION_HS_CONTROL'
-       GROUP BY m1.referencia_id, m1.id_almacen_origen
-     ) movref_almacen ON movref_almacen.referencia_id = c.id
-     LEFT JOIN almacenes almref ON almref.id_almacen = movref_almacen.id_almacen_origen
-     LEFT JOIN sedes sedref ON sedref.id_sede = almref.id_sede
-     LEFT JOIN (
-       SELECT m.referencia_id, GROUP_CONCAT(DISTINCT l.numero_lote SEPARATOR ', ') AS lotes
-       FROM movimientos_inventario m
-       LEFT JOIN lotes l ON l.id_lote = m.id_lote
-       WHERE m.referencia_tipo = 'DISPENSACION_HS_CONTROL'
-       GROUP BY m.referencia_id
-     ) loteref ON loteref.referencia_id = c.id
-     LEFT JOIN (
-       SELECT t1.referencia_id, t1.payload_json
-       FROM procesos_terminados_trazabilidad t1
-       INNER JOIN (
-         SELECT referencia_id, MAX(id_traza) AS max_id
-         FROM procesos_terminados_trazabilidad
-         WHERE referencia_tipo = 'DISPENSACION_HS_CONTROL' AND subproceso = 'DISPENSAR_MEDICAMENTO_HS'
-         GROUP BY referencia_id
-       ) tx ON tx.referencia_id = t1.referencia_id AND tx.max_id = t1.id_traza
-     ) trz ON trz.referencia_id = c.id
+     ${ENTREGAS_JOINS_SQL}
      ${where}
-     ORDER BY c.fecha_dispensacion DESC`,
-    params
+     ORDER BY COALESCE(e.fecha_hora, c.fecha_dispensacion) DESC, c.id`,
+    sqlParams
   );
 
   const [dxPorId, prescriptorPorFormulacion, tipoDocPorPaciente, extrasPorFormulacion] = await Promise.all([
@@ -3893,7 +4168,7 @@ async function fetchDispensacionDetalladaDataset({ search = '', desde = null, ha
     let cantidadFaltante = null;
     if (row.payload_json) {
       try {
-        const payload = JSON.parse(row.payload_json);
+        const payload = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : row.payload_json;
         cantidadPendiente = payload.cantidad_pendiente_antes ?? null;
         cantidadFaltante = payload.cantidad_faltante ?? null;
       } catch {
