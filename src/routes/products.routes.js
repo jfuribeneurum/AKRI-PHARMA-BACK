@@ -26,7 +26,16 @@ import {
 const productSchema = z.object({
   sku: z.string().min(2),
   codigo_barras: z.string().optional().nullable(),
-  nombre_comercial: z.string().min(2),
+  // El nombre comercial es la marca del producto en el catálogo propio de la
+  // farmacia, y muchos MX simplemente no tienen una: al enlazarlos desde
+  // HealthSphere el nombre que importa es el descriptivo de HS
+  // (nombre_medicamento_hs, ej. "ABACAVIR 300 MG TABLETA RECUBIERTA") y
+  // obligar a teclear una marca inventada ensucia el maestro. Era
+  // z.string().min(2) y bloqueaba la creación con el campo vacío. El listado
+  // ya contempla el caso (nombre_medicamento_hs || nombre_comercial || 'Sin
+  // nombre'). La columna en BD es NOT NULL: el service normaliza a cadena
+  // vacía, no a NULL (ver createProduct/updateProduct).
+  nombre_comercial: z.string().optional().nullable(),
   principio_activo: z.string().optional().nullable(),
   concentracion: z.string().optional().nullable(),
   presentacion: z.number().int().optional().nullable(),

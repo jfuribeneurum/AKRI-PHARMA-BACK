@@ -320,8 +320,13 @@ export async function getProductById(id) {
       )
     : [];
 
+  // nombre_comercial puede venir vacío (es opcional: ver
+  // normalizarNombreComercial), así que la ficha necesita el mismo nombre
+  // enlazado de HealthSphere que ya trae el listado para poder titularse.
+  const [productoConNombreHs] = await enrichWithMedicamentoHsNombre([product]);
+
   return {
-    ...product,
+    ...productoConNombreHs,
     stock_total: Number(stockSummary?.stock_total ?? 0),
     stock_cuarentena: Number(stockSummary?.stock_cuarentena ?? 0),
     stock_reservada: Number(stockSummary?.stock_reservada ?? 0),
@@ -815,6 +820,15 @@ async function assertTipoProductoValido(tipoProducto) {
   }
 }
 
+// productos.nombre_comercial es NOT NULL en BD, pero el campo es opcional en
+// el formulario: un MX enlazado a HealthSphere se identifica por el nombre
+// descriptivo de HS, no por una marca. Se guarda cadena vacía (no NULL) para
+// no tocar la columna, que es justo lo que ya esperan listProducts y el
+// listado del front al resolver el nombre a mostrar.
+function normalizarNombreComercial(valor) {
+  return valor == null ? '' : String(valor).trim();
+}
+
 export async function createProduct(payload, userId = null) {
   await assertTipoProductoValido(payload.tipo_producto);
 
@@ -842,7 +856,8 @@ export async function createProduct(payload, userId = null) {
   const cumSuffix = lastCum ? `.${lastCum}` : '';
   const codigoControl = payload.sku ? `${payload.sku}-${labPart}${cumSuffix}` : null;
 
-  const codigoAtc = await ensureCodigoAtcEnCatalogo(payload.codigo_atc, payload.nombre_comercial);
+  const nombreComercial = normalizarNombreComercial(payload.nombre_comercial);
+  const codigoAtc = await ensureCodigoAtcEnCatalogo(payload.codigo_atc, nombreComercial || null);
 
   const result = await query(
     `INSERT INTO productos (
@@ -857,7 +872,7 @@ export async function createProduct(payload, userId = null) {
       payload.sku,
       codigoControl,
       payload.codigo_barras ?? null,
-      payload.nombre_comercial,
+      nombreComercial,
       payload.principio_activo ?? null,
       payload.concentracion ?? null,
       payload.presentacion ?? null,
@@ -922,7 +937,8 @@ export async function updateProduct(id, payload, userId = null) {
     }
   }
 
-  const codigoAtc = await ensureCodigoAtcEnCatalogo(merged.codigo_atc, merged.nombre_comercial);
+  const nombreComercial = normalizarNombreComercial(merged.nombre_comercial);
+  const codigoAtc = await ensureCodigoAtcEnCatalogo(merged.codigo_atc, nombreComercial || null);
 
   await query(
     `UPDATE productos SET
@@ -957,7 +973,7 @@ export async function updateProduct(id, payload, userId = null) {
     [
       merged.id_medicamento_hs ?? null,
       merged.codigo_barras,
-      merged.nombre_comercial,
+      nombreComercial,
       merged.principio_activo,
       merged.concentracion,
       merged.presentacion ?? null,
