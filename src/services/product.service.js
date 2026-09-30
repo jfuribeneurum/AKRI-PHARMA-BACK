@@ -496,7 +496,7 @@ function atcAncestorChain(codigoRaw) {
 // código hoja, genérica para los padres intermedios) marcada explícitamente
 // como pendiente de revisar contra el estándar oficial — a petición del
 // usuario, para no dejar el campo NOT NULL vacío ni bloquear el backfill.
-async function ensureClasificacionAtcEntries(codigosConNombre) {
+async function ensureClasificacionAtcEntries(codigosConNombre, origen = 'HealthSphere') {
   const existentes = new Set((await query(`SELECT codigo_atc FROM clasificacion_atc`)).map((r) => r.codigo_atc));
 
   const porInsertar = new Map(); // codigo -> { nivel, codigo_padre, nombreMedicamento? }
@@ -516,8 +516,8 @@ async function ensureClasificacionAtcEntries(codigosConNombre) {
   const ordenados = [...porInsertar.entries()].sort((a, b) => a[1].nivel - b[1].nivel);
   for (const [codigo, { nivel, codigo_padre, nombreMedicamento }] of ordenados) {
     const descripcion = nombreMedicamento
-      ? `${nombreMedicamento} (código ATC traído de HealthSphere, pendiente de revisar contra el estándar WHO ATC oficial)`
-      : `Clasificación ATC nivel ${nivel} — ${codigo} (generado automáticamente desde HealthSphere, pendiente de revisar contra el estándar WHO ATC oficial)`;
+      ? `${nombreMedicamento} (código ATC traído de ${origen}, pendiente de revisar contra el estándar WHO ATC oficial)`
+      : `Clasificación ATC nivel ${nivel} — ${codigo} (generado automáticamente desde ${origen}, pendiente de revisar contra el estándar WHO ATC oficial)`;
     await query(
       `INSERT IGNORE INTO clasificacion_atc (codigo_atc, nivel, descripcion_en, descripcion_es, codigo_padre) VALUES (?, ?, ?, ?, ?)`,
       [codigo, nivel, descripcion, descripcion, codigo_padre]
@@ -525,6 +525,20 @@ async function ensureClasificacionAtcEntries(codigosConNombre) {
     insertados++;
   }
   return insertados;
+}
+
+// productos.codigo_atc es FK contra clasificacion_atc y ese catálogo local
+// está incompleto, así que al crear o editar un MX con un código ATC que no
+// figura en él el guardado fallaba con "foreign key constraint fails" (el
+// usuario solo veía el error crudo de MySQL). Se aplica el mismo criterio que
+// backfillCodigoAtcFromHs: completar la jerarquía faltante marcada como
+// pendiente de revisar contra el estándar WHO ATC, en vez de bloquear el
+// producto. Devuelve el código ya normalizado (trim) o null si viene vacío.
+async function ensureCodigoAtcEnCatalogo(codigoRaw, nombreComercial = null) {
+  const codigo = codigoRaw == null ? '' : String(codigoRaw).trim();
+  if (!codigo) return null;
+  await ensureClasificacionAtcEntries([[codigo, nombreComercial]], 'el maestro de productos');
+  return codigo;
 }
 
 // Completa codigo_atc para productos ya creados y enlazados a HealthSphere
@@ -828,6 +842,8 @@ export async function createProduct(payload, userId = null) {
   const cumSuffix = lastCum ? `.${lastCum}` : '';
   const codigoControl = payload.sku ? `${payload.sku}-${labPart}${cumSuffix}` : null;
 
+  const codigoAtc = await ensureCodigoAtcEnCatalogo(payload.codigo_atc, payload.nombre_comercial);
+
   const result = await query(
     `INSERT INTO productos (
       id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo, concentracion, presentacion,
@@ -851,7 +867,7 @@ export async function createProduct(payload, userId = null) {
       payload.consecutivo_cum ?? null,
       payload.id_categoria ?? null,
       payload.id_forma ?? null,
-      payload.codigo_atc ?? null,
+      codigoAtc,
       payload.codigo_dci ?? null,
       payload.clasificacion ?? null,
       payload.id_laboratorio ?? null,
@@ -906,6 +922,8 @@ export async function updateProduct(id, payload, userId = null) {
     }
   }
 
+  const codigoAtc = await ensureCodigoAtcEnCatalogo(merged.codigo_atc, merged.nombre_comercial);
+
   await query(
     `UPDATE productos SET
       id_medicamento_hs = ?,
@@ -949,7 +967,7 @@ export async function updateProduct(id, payload, userId = null) {
       merged.consecutivo_cum ?? null,
       merged.id_categoria,
       merged.id_forma,
-      merged.codigo_atc,
+      codigoAtc,
       merged.codigo_dci ?? null,
       merged.clasificacion ?? null,
       merged.id_laboratorio,
