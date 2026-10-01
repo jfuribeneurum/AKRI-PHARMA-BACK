@@ -1,7 +1,11 @@
 import { query, withTransaction } from '../config/db.js';
-import { getFormulacionHSById } from './formulacion-hs.service.js';
+import { getFormulacionHSById, getPrescriptorPorIdFormulacion, getDxPorIdMedFormulacion, getTipoDocumentoPacientePorId } from './formulacion-hs.service.js';
 import { HttpError } from '../utils/http-error.js';
 import { recordProcessTrace } from './traceability.service.js';
+import { crearFacturaSalud, obtenerDocumentosSalud, crearNotaCreditoSalud, crearNotaDebitoSalud } from './akribeia.service.js';
+
+const TIPO_MEDICAMENTO_PBS = '01';
+const TIPO_MEDICAMENTO_NO_PBS = '02';
 
 export async function getControlByFormulacion(idFormulacion) {
   return query(
@@ -497,4 +501,227 @@ export async function cancelarDispensacion(id, userId, idSede = null) {
   });
 
   return { id, estado: 'cancelado' };
+}
+
+function construirPosPaciente(formulacion, tipoDocumento) {
+  const nombre = (formulacion.nombre_paciente ?? '').trim();
+  const fechaNac = formulacion.fecha_nacimiento_paciente instanceof Date
+    ? formulacion.fecha_nacimiento_paciente.toISOString().slice(0, 10)
+    : (formulacion.fecha_nacimiento_paciente ? String(formulacion.fecha_nacimiento_paciente).slice(0, 10) : null);
+  const sexoRaw = String(formulacion.sexo_paciente ?? '').trim().toUpperCase();
+  return {
+    tipoDocumentoIdentificacion: tipoDocumento || 'CC',
+    numDocumentoIdentificacion: formulacion.documento_paciente,
+    nombre: nombre || undefined,
+    fechaNacimiento: fechaNac,
+    codSexo: sexoRaw === 'M' || sexoRaw === 'F' ? sexoRaw : 'F',
+    telefono: formulacion.telefono_paciente || formulacion.celular_paciente || undefined,
+    direccion: formulacion.direccion_paciente || undefined
+  };
+}
+
+/** Arma los items de PosMedicamento a partir de lo YA dispensado
+ *  (dispensacion_hs_control, cantidad_dispensada > 0) para esta formulación,
+ *  cruzando CUM/PBS locales (productos) y diagnóstico/prescriptor de HS. */
+async function construirPosMedicamentos(idFormulacionHs, controlRows, prescriptor) {
+  const idsProducto = [...new Set(controlRows.map(r => r.id_producto).filter(Boolean))];
+  const productosMap = new Map();
+  if (idsProducto.length) {
+    const placeholders = idsProducto.map(() => '?').join(',');
+    const rows = await query(
+      `SELECT id_producto, cum, consecutivo_cum, unidad_medida, es_pbs FROM productos WHERE id_producto IN (${placeholders})`,
+      idsProducto
+    );
+    for (const r of rows) productosMap.set(r.id_producto, r);
+  }
+
+  const idsMedFormulacion = controlRows.map(r => r.id_med_formulacion_hs).filter(id => id != null && id > 0);
+  const dxMap = idsMedFormulacion.length ? await getDxPorIdMedFormulacion(idsMedFormulacion) : {};
+
+  const fecha = new Date().toISOString().slice(0, 10);
+  const items = [];
+  const sinCum = [];
+
+  for (const row of controlRows) {
+    const producto = row.id_producto ? productosMap.get(row.id_producto) : null;
+    if (!producto?.cum) {
+      sinCum.push(row.nombre_medicamento);
+      continue;
+    }
+    const dx = dxMap[row.id_med_formulacion_hs];
+    items.push({
+      codTecnologiaSalud: producto.consecutivo_cum ? `${producto.cum}-${producto.consecutivo_cum}` : String(producto.cum),
+      nomTecnologiaSalud: row.nombre_medicamento,
+      cantidadMedicamento: Number(row.cantidad_dispensada),
+      unidadMinDispensa: producto.unidad_medida || 'UND',
+      tipoMedicamento: producto.es_pbs ? TIPO_MEDICAMENTO_PBS : TIPO_MEDICAMENTO_NO_PBS,
+      fechaDispensAdmon: fecha,
+      codDiagnosticoPrincipal: dx?.cie10 || undefined,
+      // Si hay número de documento pero no quedó el tipo (p.ej. el médico no
+      // tiene tipo_documento diligenciado en HS), se asume CC — es el tipo
+      // casi universal para profesionales de salud en Colombia, y evita que
+      // falte este campo obligatorio del RIPS sin necesidad real.
+      profesionalTipoDocumento: prescriptor?.tipo_documento_medico || (prescriptor?.numero_documento_medico ? 'CC' : undefined),
+      profesionalNumDocumento: prescriptor?.numero_documento_medico || undefined
+    });
+  }
+
+  return { items, sinCum };
+}
+
+async function registrarResultadoDianHS(idFormulacionHs, { modo, exito, resultado, error, requestPayload }) {
+  await query(
+    `INSERT INTO dispensacion_hs_dian (
+      id_formulacion_hs, modo, factura_id, invoice_number, cufe, estado_dian, pdf_base64,
+      paciente_invoice_number, paciente_cufe, paciente_estado_dian, paciente_pdf_base64,
+      tirilla_pdf_base64, exito, error_mensaje, request_json, response_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      idFormulacionHs,
+      modo ?? resultado?.modo ?? null,
+      resultado?.factura_id ?? null,
+      resultado?.eps?.invoice_number ?? null,
+      resultado?.eps?.cufe ?? null,
+      resultado?.eps?.estado_dian ?? null,
+      resultado?.eps?.pdf_base64 ?? null,
+      resultado?.paciente?.invoice_number ?? null,
+      resultado?.paciente?.cufe ?? null,
+      resultado?.paciente?.estado_dian ?? null,
+      resultado?.paciente?.pdf_base64 ?? null,
+      resultado?.tirilla_pdf_base64 ?? null,
+      exito,
+      error ?? null,
+      JSON.stringify(requestPayload ?? {}),
+      resultado ? JSON.stringify(resultado) : null
+    ]
+  );
+}
+
+/** Factura a la DIAN (copago/cuota moderadora) lo que YA se dispensó de una
+ *  formulación — se llama UNA sola vez, después de que el frontend termina de
+ *  dispensar cada medicamento (ese es el único punto donde "toda la visita" ya
+ *  quedó confirmada; cada dispensarMedicamento() es su propia transacción).
+ *  Si AkribeIA falla, la dispensación YA quedó registrada (el medicamento ya
+ *  se entregó); el error queda guardado en dispensacion_hs_dian, nunca
+ *  revierte nada de lo ya dispensado. */
+export async function facturarSaludFormulacion(idFormulacionHs, payload, userId, userName) {
+  if (!payload.tipo_cobro_usuario) {
+    return { dian: null };
+  }
+
+  const [formulacion, controlRows] = await Promise.all([
+    getFormulacionHSById(idFormulacionHs),
+    getControlByFormulacion(idFormulacionHs)
+  ]);
+  if (!formulacion) {
+    throw new HttpError(404, 'Formulación no encontrada en HealthSphere');
+  }
+
+  const dispensados = controlRows.filter(r => Number(r.cantidad_dispensada) > 0);
+  if (!dispensados.length) {
+    throw new HttpError(400, 'No hay medicamentos dispensados en esta formulación para facturar.');
+  }
+
+  const [tipoDocMap, prescriptorMap] = await Promise.all([
+    getTipoDocumentoPacientePorId([formulacion.idPaciente]),
+    getPrescriptorPorIdFormulacion([idFormulacionHs])
+  ]);
+  const prescriptor = prescriptorMap[idFormulacionHs] ?? null;
+
+  const { items: medicamentos, sinCum } = await construirPosMedicamentos(idFormulacionHs, dispensados, prescriptor);
+  if (!medicamentos.length) {
+    throw new HttpError(400, `Ninguno de los medicamentos dispensados tiene CUM registrado en el maestro de productos (${sinCum.join(', ')}). No se puede facturar.`);
+  }
+
+  const requestPayload = {
+    external_ref: `HS-${idFormulacionHs}`,
+    pos_usuario_nombre: userName || undefined,
+    contrato_numero: payload.contrato_numero,
+    centro_costo_id: payload.centro_costo_id,
+    punto_pago_sede_id: payload.punto_pago_sede_id,
+    tipo_cobro_usuario: payload.tipo_cobro_usuario,
+    pago_usuario_porcentaje: payload.pago_usuario_porcentaje ?? undefined,
+    pago_usuario_monto: payload.pago_usuario_monto ?? undefined,
+    paciente: construirPosPaciente(formulacion, tipoDocMap[formulacion.idPaciente]),
+    medicamentos
+  };
+
+  try {
+    const respuesta = await crearFacturaSalud(requestPayload);
+    // Igual que en el flujo anterior: AkribeIA solo manda `ok` cuando falla;
+    // si llegamos hasta acá sin excepción, fue éxito.
+    const dian = { ok: true, ...respuesta };
+    await registrarResultadoDianHS(idFormulacionHs, { exito: true, resultado: dian, requestPayload });
+    return { dian };
+  } catch (error) {
+    await registrarResultadoDianHS(idFormulacionHs, { exito: false, error: error.message, requestPayload });
+    return { dian: { ok: false, error: error.message } };
+  }
+}
+
+export async function listDianInvoicesHS(search = '') {
+  const filter = String(search ?? '').trim();
+  const wildcard = `%${filter}%`;
+  return query(
+    `SELECT dhd.*,
+            MIN(dc.nombre_medicamento) AS ejemplo_medicamento,
+            MIN(dc.nombre_paciente) AS paciente_nombre,
+            MIN(dc.documento_paciente) AS paciente_documento
+     FROM dispensacion_hs_dian dhd
+     LEFT JOIN dispensacion_hs_control dc ON dc.id_formulacion_hs = dhd.id_formulacion_hs
+     WHERE (? = '' OR dhd.paciente_invoice_number LIKE ? OR dhd.invoice_number LIKE ? OR dc.nombre_paciente LIKE ? OR dc.documento_paciente LIKE ?)
+     GROUP BY dhd.id
+     ORDER BY dhd.fecha_creacion DESC
+     LIMIT 200`,
+    [filter, wildcard, wildcard, wildcard, wildcard]
+  );
+}
+
+async function obtenerFacturaDianHSOriginal(id) {
+  const [row] = await query(
+    `SELECT * FROM dispensacion_hs_dian WHERE id = ? AND modo NOT IN ('nota_credito', 'nota_debito')`,
+    [id]
+  );
+  if (!row) throw new HttpError(404, 'Factura de salud no encontrada');
+  if (!row.paciente_invoice_number) {
+    throw new HttpError(400, 'Esta dispensación no generó factura al paciente (sin copago/cuota moderadora) — no hay nada que ver/anular por esta vía.');
+  }
+  return row;
+}
+
+export async function obtenerDocumentosDianHS(id) {
+  const row = await obtenerFacturaDianHSOriginal(id);
+  return obtenerDocumentosSalud({ factura_id: row.factura_id });
+}
+
+async function registrarNotaAjusteHS(row, tipo, resultado) {
+  await query(
+    `INSERT INTO dispensacion_hs_dian (
+      id_formulacion_hs, modo, factura_id, paciente_invoice_number, paciente_cufe,
+      paciente_estado_dian, paciente_pdf_base64, exito, response_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      row.id_formulacion_hs, tipo, row.factura_id,
+      resultado.numero_nota ?? null, resultado.cude ?? null, resultado.estado_dian ?? null,
+      resultado.pdf_base64 ?? null, true, JSON.stringify(resultado)
+    ]
+  );
+  if (tipo === 'nota_credito') {
+    await query(`UPDATE dispensacion_hs_dian SET anulada = TRUE WHERE id = ?`, [row.id]);
+  }
+}
+
+export async function emitirNotaCreditoDianHS(id, motivo) {
+  const row = await obtenerFacturaDianHSOriginal(id);
+  if (row.anulada) throw new HttpError(400, 'Esta factura ya fue anulada anteriormente.');
+  const resultado = await crearNotaCreditoSalud({ factura_id: row.factura_id, motivo: motivo || undefined });
+  await registrarNotaAjusteHS(row, 'nota_credito', resultado);
+  return resultado;
+}
+
+export async function emitirNotaDebitoDianHS(id, motivo) {
+  const row = await obtenerFacturaDianHSOriginal(id);
+  const resultado = await crearNotaDebitoSalud({ factura_id: row.factura_id, motivo: motivo || undefined });
+  await registrarNotaAjusteHS(row, 'nota_debito', resultado);
+  return resultado;
 }

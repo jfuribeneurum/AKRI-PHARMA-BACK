@@ -8,7 +8,12 @@ import {
   dispensarMedicamento,
   cancelarDispensacion,
   getHistorialEntregas,
-  anularEntregaHS
+  anularEntregaHS,
+  facturarSaludFormulacion,
+  listDianInvoicesHS,
+  obtenerDocumentosDianHS,
+  emitirNotaCreditoDianHS,
+  emitirNotaDebitoDianHS
 } from '../services/dispensacion-hs.service.js';
 import {
   excluirMedicamentoFormulado,
@@ -16,6 +21,7 @@ import {
   agregarMedicamentoExtra,
   eliminarMedicamentoExtra
 } from '../services/formulacion-hs.service.js';
+import { obtenerOpciones, obtenerOpcionesSalud, cotizarFacturaSalud } from '../services/akribeia.service.js';
 
 export const dispensacionHsRouter = Router();
 
@@ -136,4 +142,72 @@ dispensacionHsRouter.delete('/medicamentos-extra/:id', asyncHandler(async (req, 
   const userId = req.user?.sub ?? null;
   const result = await eliminarMedicamentoExtra(Number(req.params.id), userId, req.user?.id_sede ?? null);
   res.json({ success: true, data: result });
+}));
+
+// GET /dispensacion-hs/salud/opciones — EPS/contratos/centros de costo/sedes de AkribeIA.
+dispensacionHsRouter.get('/salud/opciones', asyncHandler(async (_req, res) => {
+  const [generales, salud] = await Promise.all([obtenerOpciones(), obtenerOpcionesSalud()]);
+  res.json({
+    success: true,
+    data: {
+      eps: salud.eps,
+      contratos: salud.contratos,
+      centros_costo: generales.centros_costo,
+      sedes: generales.sedes
+    }
+  });
+}));
+
+const cotizarSaludSchema = z.object({
+  contrato_numero: z.string().min(1),
+  tipo_cobro_usuario: z.enum(['copago', 'cuota_moderadora']).optional(),
+  pago_usuario_porcentaje: z.number().optional(),
+  medicamentos: z.array(z.object({
+    codTecnologiaSalud: z.string().min(1),
+    cantidadMedicamento: z.number().positive()
+  })).min(1)
+});
+
+dispensacionHsRouter.post('/salud/cotizar', validate(cotizarSaludSchema), asyncHandler(async (req, res) => {
+  const data = await cotizarFacturaSalud(req.body);
+  res.json({ success: true, data });
+}));
+
+const facturarSaludSchema = z.object({
+  contrato_numero: z.string().min(1),
+  centro_costo_id: z.string().min(1),
+  punto_pago_sede_id: z.string().min(1),
+  tipo_cobro_usuario: z.enum(['copago', 'cuota_moderadora']).optional().nullable(),
+  pago_usuario_porcentaje: z.number().optional().nullable(),
+  pago_usuario_monto: z.number().optional().nullable()
+});
+
+// POST /dispensacion-hs/formulacion/:id/factura-salud — se llama UNA sola vez
+// después de dispensar todos los medicamentos de la formulación (no por cada
+// medicamento). Si tipo_cobro_usuario no viene, no se envía nada a la DIAN.
+dispensacionHsRouter.post('/formulacion/:id/factura-salud', validate(facturarSaludSchema), asyncHandler(async (req, res) => {
+  const userId = req.user?.sub ?? null;
+  const userName = req.user?.name || req.user?.username || null;
+  const data = await facturarSaludFormulacion(Number(req.params.id), req.body, userId, userName);
+  res.json({ success: true, data });
+}));
+
+dispensacionHsRouter.get('/salud/facturas', asyncHandler(async (req, res) => {
+  const data = await listDianInvoicesHS(String(req.query.search ?? ''));
+  res.json({ success: true, data });
+}));
+
+dispensacionHsRouter.get('/salud/facturas/:id/documentos', asyncHandler(async (req, res) => {
+  const data = await obtenerDocumentosDianHS(Number(req.params.id));
+  res.json({ success: true, data });
+}));
+
+dispensacionHsRouter.post('/salud/facturas/:id/nota-credito', asyncHandler(async (req, res) => {
+  const data = await emitirNotaCreditoDianHS(Number(req.params.id), req.body?.motivo);
+  res.json({ success: true, data });
+}));
+
+dispensacionHsRouter.post('/salud/facturas/:id/nota-debito', asyncHandler(async (req, res) => {
+  const data = await emitirNotaDebitoDianHS(Number(req.params.id), req.body?.motivo);
+  res.json({ success: true, data });
 }));

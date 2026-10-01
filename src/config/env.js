@@ -52,5 +52,8 @@ export const env = {
   SIGNATURE_ENFORCE_PIN: String(process.env.SIGNATURE_ENFORCE_PIN ?? 'true') === 'true',
   SIGNATURE_HASH_SALT: process.env.SIGNATURE_HASH_SALT ?? 'akripharmacy-signature-salt',
   APP_BASE_URL: process.env.APP_BASE_URL ?? 'http://localhost:8080',
-  BACKUP_DIR: process.env.BACKUP_DIR ?? path.resolve(process.cwd(), 'backups')
+  BACKUP_DIR: process.env.BACKUP_DIR ?? path.resolve(process.cwd(), 'backups'),
+  AKRIBEIA_BASE_URL: process.env.AKRIBEIA_BASE_URL ?? '',
+  AKRIBEIA_API_KEY: process.env.AKRIBEIA_API_KEY ?? '',
+  AKRIBEIA_TIMEOUT_MS: Number(process.env.AKRIBEIA_TIMEOUT_MS ?? 15000)
 };
