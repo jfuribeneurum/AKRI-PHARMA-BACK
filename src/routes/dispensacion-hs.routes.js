@@ -13,7 +13,8 @@ import {
   listDianInvoicesHS,
   obtenerDocumentosDianHS,
   emitirNotaCreditoDianHS,
-  emitirNotaDebitoDianHS
+  emitirNotaDebitoDianHS,
+  reintentarFacturaSaludDianHS
 } from '../services/dispensacion-hs.service.js';
 import {
   excluirMedicamentoFormulado,
@@ -209,5 +210,10 @@ dispensacionHsRouter.post('/salud/facturas/:id/nota-credito', asyncHandler(async
 
 dispensacionHsRouter.post('/salud/facturas/:id/nota-debito', asyncHandler(async (req, res) => {
   const data = await emitirNotaDebitoDianHS(Number(req.params.id), req.body?.motivo);
+  res.json({ success: true, data });
+}));
+
+dispensacionHsRouter.post('/salud/facturas/:id/reintentar', asyncHandler(async (req, res) => {
+  const data = await reintentarFacturaSaludDianHS(Number(req.params.id));
   res.json({ success: true, data });
 }));

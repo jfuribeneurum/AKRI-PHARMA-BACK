@@ -659,10 +659,22 @@ export async function facturarSaludFormulacion(idFormulacionHs, payload, userId,
   }
 }
 
+// Errores de resolverTarifasMedicamentos (facturaSaludPOS.service.ts en
+// Akribeia) cuando el medicamento dispensado no está habilitado/tarifado en
+// el contrato de esa EPS — la dispensación YA se hizo (nunca se revierte,
+// ver comentario de facturarSaludFormulacion más arriba), así que esto no es
+// un error técnico cualquiera: es una factura que quedó pendiente de hacerse
+// a mano una vez alguien habilite el medicamento en el contrato.
+const RE_PENDIENTE_FACTURACION = /no tiene tarifa habilitada para este contrato|no está registrado en el catálogo de Servicios en Salud/i;
+
+function esPendienteFacturacion(row) {
+  return !row.exito && !!row.error_mensaje && RE_PENDIENTE_FACTURACION.test(row.error_mensaje);
+}
+
 export async function listDianInvoicesHS(search = '') {
   const filter = String(search ?? '').trim();
   const wildcard = `%${filter}%`;
-  return query(
+  const rows = await query(
     `SELECT dhd.*,
             MIN(dc.nombre_medicamento) AS ejemplo_medicamento,
             MIN(dc.nombre_paciente) AS paciente_nombre,
@@ -675,6 +687,35 @@ export async function listDianInvoicesHS(search = '') {
      LIMIT 200`,
     [filter, wildcard, wildcard, wildcard, wildcard]
   );
+  return rows.map(row => ({ ...row, pendiente_facturacion: esPendienteFacturacion(row) }));
+}
+
+/** Reintenta, con los mismos datos guardados en su momento (contrato, centro
+ *  de costo/sede, paciente, medicamentos, copago/cuota), una factura de salud
+ *  que falló — típicamente porque el medicamento no tenía tarifa habilitada
+ *  en el contrato. Si para entonces ya se habilitó, esto la emite sin que
+ *  nadie tenga que volver a digitar nada; si sigue fallando, queda otro
+ *  registro nuevo con el error actualizado (no se pisa el intento anterior,
+ *  misma lógica que las notas de ajuste). */
+export async function reintentarFacturaSaludDianHS(id) {
+  const [row] = await query(`SELECT * FROM dispensacion_hs_dian WHERE id = ?`, [id]);
+  if (!row) throw new HttpError(404, 'Registro no encontrado');
+  if (row.exito) throw new HttpError(400, 'Esta factura ya fue enviada exitosamente a la DIAN — no hay nada que reintentar.');
+  if (!row.request_json) throw new HttpError(400, 'No hay datos guardados de este intento para poder reintentarlo.');
+
+  let requestPayload;
+  try { requestPayload = JSON.parse(row.request_json); }
+  catch { throw new HttpError(500, 'Los datos guardados de este intento están corruptos y no se pueden reenviar.'); }
+
+  try {
+    const respuesta = await crearFacturaSalud(requestPayload);
+    const dian = { ok: true, ...respuesta };
+    await registrarResultadoDianHS(row.id_formulacion_hs, { modo: row.modo, exito: true, resultado: dian, requestPayload });
+    return { dian };
+  } catch (error) {
+    await registrarResultadoDianHS(row.id_formulacion_hs, { modo: row.modo, exito: false, error: error.message, requestPayload });
+    return { dian: { ok: false, error: error.message } };
+  }
 }
 
 async function obtenerFacturaDianHSOriginal(id) {
