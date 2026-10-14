@@ -331,10 +331,13 @@ export async function getFormulacionHSById(idFormulacion, idSede = null) {
 
   const [extras, exclusiones] = await Promise.all([
     query(
-      `SELECT id, id_producto, nombre_medicamento, presentacion, via_administracion, cantidad, diagnostico, observaciones
-         FROM dispensacion_hs_medicamentos_extra
-        WHERE id_formulacion_hs = ? AND activo = 1
-        ORDER BY id ASC`,
+      `SELECT e.id, e.id_producto,
+              COALESCE(NULLIF(TRIM(p.principio_activo), ''), e.nombre_medicamento) AS nombre_medicamento,
+              e.presentacion, e.via_administracion, e.cantidad, e.diagnostico, e.observaciones
+         FROM dispensacion_hs_medicamentos_extra e
+         LEFT JOIN productos p ON p.id_producto = e.id_producto
+        WHERE e.id_formulacion_hs = ? AND e.activo = 1
+        ORDER BY e.id ASC`,
       [idFormulacion]
     ),
     query(
@@ -436,7 +439,7 @@ export async function agregarMedicamentoExtra(idFormulacionHs, payload, userId, 
 
   await assertFormulacionExiste(idFormulacionHs);
 
-  const [producto] = await query(`SELECT nombre_comercial FROM productos WHERE id_producto = ? AND activo = TRUE`, [id_producto]);
+  const [producto] = await query(`SELECT nombre_comercial, principio_activo FROM productos WHERE id_producto = ? AND activo = TRUE`, [id_producto]);
   if (!producto) {
     throw new HttpError(404, 'El medicamento seleccionado no existe en el Maestro de productos.');
   }
@@ -459,7 +462,7 @@ export async function agregarMedicamentoExtra(idFormulacionHs, payload, userId, 
     `INSERT INTO dispensacion_hs_medicamentos_extra
        (id_formulacion_hs, id_producto, nombre_medicamento, presentacion, via_administracion, cantidad, diagnostico, observaciones, id_usuario_creador)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [idFormulacionHs, id_producto, producto.nombre_comercial, presentacion, via_administracion, cantidad, diagnostico, observaciones, userId ?? null]
+    [idFormulacionHs, id_producto, producto.principio_activo?.trim() || producto.nombre_comercial, presentacion, via_administracion, cantidad, diagnostico, observaciones, userId ?? null]
   );
 
   await recordProcessTrace(null, {
@@ -696,13 +699,20 @@ export async function getTipoDocumentoPacientePorId(idsPacienteHs) {
 
 export async function eliminarMedicamentoExtra(idMedicamentoExtra, userId, idSede = null) {
   const [row] = await query(
-    `SELECT id, id_formulacion_hs, nombre_medicamento FROM dispensacion_hs_medicamentos_extra WHERE id = ? AND activo = 1`,
+    `SELECT id, id_formulacion_hs, id_producto, nombre_medicamento FROM dispensacion_hs_medicamentos_extra WHERE id = ? AND activo = 1`,
     [idMedicamentoExtra]
   );
   if (!row) {
     throw new HttpError(404, 'Medicamento manual no encontrado');
   }
-  await query(`UPDATE dispensacion_hs_medicamentos_extra SET activo = 0 WHERE id = ?`, [idMedicamentoExtra]);
+  // Se desactivan también las copias activas del mismo producto en la misma
+  // formulación (duplicados creados antes del bloqueo de reintentos); si
+  // quedara alguna, volver a agregar el medicamento fallaría con 409.
+  await query(
+    `UPDATE dispensacion_hs_medicamentos_extra SET activo = 0
+      WHERE activo = 1 AND (id = ? OR (id_formulacion_hs = ? AND id_producto = ?))`,
+    [idMedicamentoExtra, row.id_formulacion_hs, row.id_producto]
+  );
   await recordProcessTrace(null, {
     proceso: 'DISPENSACION',
     subproceso: 'ELIMINAR_MEDICAMENTO_EXTRA',

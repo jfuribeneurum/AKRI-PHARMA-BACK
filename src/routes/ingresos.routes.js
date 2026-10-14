@@ -36,10 +36,10 @@ const ingresoSchema = z.object({
   fecha_vencimiento:    z.string().optional().nullable(),
   estado:               z.enum(['recibido', 'cancelado']).default('recibido'),
   // Factura
-  prefijo_factura:      z.string().optional().nullable(),
-  numero_factura:       z.string().optional().nullable(),
+  prefijo_factura:      z.string().transform(s => s.trim().toUpperCase()).optional().nullable(),
+  numero_factura:       z.string().transform(s => s.trim().toUpperCase()).optional().nullable(),
   fecha_factura:        z.string().optional().nullable(),
-  cufe:                 z.string().optional().nullable(),
+  cufe:               z.string().optional().nullable(),
   fecha_recepcion:      z.string().optional().nullable(),
   observaciones:        z.string().optional().nullable(),
   // Orden / sede

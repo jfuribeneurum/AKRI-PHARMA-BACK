@@ -284,6 +284,19 @@ describe('agregarMedicamentoExtra / eliminarMedicamentoExtra', () => {
       .rejects.toMatchObject({ status: 404 });
   });
 
+  it('stores the generic name (principio_activo) instead of the commercial name when the product has one', async () => {
+    mockHsConnection.query.mockResolvedValueOnce([[{ Id: 7 }]]);
+    query
+      .mockResolvedValueOnce([{ nombre_comercial: 'LANTUS', principio_activo: ' INSULINA GLARGINA 100 UI/ML ' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ insertId: 124 })
+      .mockResolvedValueOnce({});
+
+    await agregarMedicamentoExtra(7, { id_producto: 42, cantidad: 1 }, 1);
+
+    expect(query.mock.calls[2][1][2]).toBe('INSULINA GLARGINA 100 UI/ML');
+  });
+
   it("inserts using the product's own nombre_comercial from the Maestro, never client-supplied text, and traces it", async () => {
     mockHsConnection.query.mockResolvedValueOnce([[{ Id: 7 }]]); // assertFormulacionExiste
     query
@@ -317,7 +330,7 @@ describe('agregarMedicamentoExtra / eliminarMedicamentoExtra', () => {
 
   it('eliminarMedicamentoExtra soft-deletes (activo = 0) an existing manual medicamento and traces it', async () => {
     query
-      .mockResolvedValueOnce([{ id: 5, id_formulacion_hs: 7, nombre_medicamento: 'IBUPROFENO 400 MG' }])
+      .mockResolvedValueOnce([{ id: 5, id_formulacion_hs: 7, id_producto: 451, nombre_medicamento: 'IBUPROFENO 400 MG' }])
       .mockResolvedValueOnce({ affectedRows: 1 })
       .mockResolvedValueOnce({});
 
@@ -326,7 +339,7 @@ describe('agregarMedicamentoExtra / eliminarMedicamentoExtra', () => {
     expect(result).toEqual({ id: 5, eliminado: true });
     const [sql, params] = query.mock.calls[1];
     expect(sql).toMatch(/UPDATE dispensacion_hs_medicamentos_extra SET activo = 0/);
-    expect(params).toEqual([5]);
+    expect(params).toEqual([5, 7, 451]);
     expect(query.mock.calls[2][0]).toMatch(/INSERT INTO procesos_terminados_trazabilidad/);
   });
 
