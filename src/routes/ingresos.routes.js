@@ -348,6 +348,53 @@ router.get('/next-number', asyncHandler(async (_req, res) => {
 }));
 
 // ──────────────────────────────────────────────
+// Prefijo + número de factura es único entre ingresos: la misma factura no se
+// puede registrar dos veces. Los ingresos anulados no cuentan (se anularon
+// justamente para poder volver a registrar esa factura bien).
+// ──────────────────────────────────────────────
+function normalizarFactura(prefijo, numero) {
+  const p = String(prefijo ?? '').trim().toUpperCase();
+  const n = String(numero ?? '').trim().toUpperCase();
+  return p && n ? { prefijo: p, numero: n } : null;
+}
+
+async function buscarIngresoConFactura(connection, { prefijo, numero }) {
+  const [rows] = await connection.query(
+    `SELECT id_ingreso, referencia FROM ingresos
+      WHERE UPPER(TRIM(prefijo_factura)) = ? AND UPPER(TRIM(numero_factura)) = ?
+        AND estado <> 'anulado'
+      LIMIT 1`,
+    [prefijo, numero]
+  );
+  return rows?.[0] ?? null;
+}
+
+function mensajeFacturaDuplicada({ prefijo, numero }, existente) {
+  return `La factura ${prefijo}${numero} ya fue registrada en el ingreso ${existente.referencia}.`;
+}
+
+// GET /ingresos/factura-disponible?prefijo=FV&numero=1234 — validación en
+// vivo del formulario, antes de intentar guardar.
+router.get('/factura-disponible', asyncHandler(async (req, res) => {
+  const factura = normalizarFactura(req.query.prefijo, req.query.numero);
+  if (!factura) {
+    return res.json({ success: true, data: { disponible: true } });
+  }
+  const connection = await pool.getConnection();
+  try {
+    const existente = await buscarIngresoConFactura(connection, factura);
+    res.json({
+      success: true,
+      data: existente
+        ? { disponible: false, referencia: existente.referencia, message: mensajeFacturaDuplicada(factura, existente) }
+        : { disponible: true }
+    });
+  } finally {
+    connection.release();
+  }
+}));
+
+// ──────────────────────────────────────────────
 // GET /ingresos
 // ──────────────────────────────────────────────
 router.get('/', asyncHandler(async (req, res) => {
@@ -402,7 +449,24 @@ router.get('/', asyncHandler(async (req, res) => {
 // ──────────────────────────────────────────────
 router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
   const connection = await pool.getConnection();
+  const factura = normalizarFactura(req.body.prefijo_factura, req.body.numero_factura);
+  // Lock con nombre por factura: dos usuarios guardando la misma factura al
+  // mismo tiempo quedan en fila, y el segundo ya ve la del primero.
+  const lockName = factura ? `ingreso_factura:${factura.prefijo}:${factura.numero}`.slice(0, 64) : null;
+  let lockTomado = false;
   try {
+    if (factura) {
+      const [lockRows] = await connection.query(`SELECT GET_LOCK(?, 10) AS ok`, [lockName]);
+      lockTomado = Number(lockRows?.[0]?.ok) === 1;
+      if (!lockTomado) {
+        return res.status(409).json({ success: false, message: 'Otra persona está registrando esta misma factura. Intenta de nuevo en unos segundos.' });
+      }
+      const existente = await buscarIngresoConFactura(connection, factura);
+      if (existente) {
+        return res.status(409).json({ success: false, message: mensajeFacturaDuplicada(factura, existente) });
+      }
+    }
+
     const {
       referencia, cantidad, lote, fecha_vencimiento, estado,
       prefijo_factura, numero_factura, fecha_factura, cufe, fecha_recepcion, observaciones,
@@ -518,6 +582,9 @@ router.post('/', validate(ingresoSchema), asyncHandler(async (req, res) => {
 
     res.status(201).json({ success: true, message: 'Ingreso creado exitosamente' });
   } finally {
+    if (lockTomado) {
+      await connection.query(`SELECT RELEASE_LOCK(?)`, [lockName]).catch(() => {});
+    }
     connection.release();
   }
 }));

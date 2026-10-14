@@ -56,10 +56,27 @@ function basePayload(overrides = {}) {
   };
 }
 
+// Responde según la consulta: GET_LOCK concedido, ninguna factura previa
+// (salvo que se pase una), y el INSERT con su insertId.
+function fakeQuery({ facturaExistente = null, lockOk = 1 } = {}) {
+  return async (sql) => {
+    if (/GET_LOCK/.test(sql)) return [[{ ok: lockOk }]];
+    if (/RELEASE_LOCK/.test(sql)) return [[{}]];
+    if (/FROM ingresos\s+WHERE UPPER/.test(sql)) return [facturaExistente ? [facturaExistente] : []];
+    return [{ insertId: 123 }];
+  };
+}
+
+function insertCall() {
+  const call = mockConnection.query.mock.calls.find(([sql]) => /INSERT INTO ingresos\s*\(/.test(sql));
+  if (!call) throw new Error('No se ejecutó el INSERT INTO ingresos');
+  return call;
+}
+
 describe('POST /ingresos — fecha_factura viaja completo hasta el INSERT', () => {
   beforeEach(() => {
     mockConnection.query.mockReset();
-    mockConnection.query.mockResolvedValue([{ insertId: 123 }]);
+    mockConnection.query.mockImplementation(fakeQuery());
   });
 
   it('guarda fecha_factura en el índice de parámetro correcto del INSERT', async () => {
@@ -70,7 +87,7 @@ describe('POST /ingresos — fecha_factura viaja completo hasta el INSERT', () =
     expect(res.statusCode).toBe(201);
     expect(res.body).toMatchObject({ success: true });
 
-    const [sql, params] = mockConnection.query.mock.calls[0];
+    const [sql, params] = insertCall();
     expect(sql).toMatch(/INSERT INTO ingresos/);
 
     // La columna fecha_factura debe estar en la lista de columnas del INSERT,
@@ -100,7 +117,7 @@ describe('POST /ingresos — fecha_factura viaja completo hasta el INSERT', () =
     const res = await runRoute('post', '/', req);
 
     expect(res.statusCode).toBe(201);
-    const [, params] = mockConnection.query.mock.calls[0];
+    const [, params] = insertCall();
     const idxNumeroParam = params.indexOf('1234');
     expect(params[idxNumeroParam + 1]).toBeNull();
   });
@@ -110,7 +127,7 @@ describe('POST /ingresos — fecha_factura viaja completo hasta el INSERT', () =
 
     await runRoute('post', '/', req);
 
-    const [, params] = mockConnection.query.mock.calls[0];
+    const [, params] = insertCall();
     const idxNumeroParam = params.indexOf('1234');
     expect(params[idxNumeroParam + 1]).toBeNull();
   });
@@ -137,5 +154,96 @@ describe('GET /ingresos — fecha_factura se expone en el listado', () => {
     const [sql] = mockConnection.query.mock.calls[0];
     expect(sql).toMatch(/i\.fecha_factura/);
     expect(res.body.data[0].fecha_factura).toBe('2026-03-05');
+  });
+});
+
+describe('POST /ingresos — prefijo + número de factura es único', () => {
+  beforeEach(() => {
+    mockConnection.query.mockReset();
+  });
+
+  it('rechaza con 409 una factura que ya está en otro ingreso, sin insertar nada', async () => {
+    mockConnection.query.mockImplementation(fakeQuery({ facturaExistente: { id_ingreso: 9, referencia: 'ING-0009' } }));
+    const req = { body: basePayload(), user: { sub: 1 } };
+
+    const res = await runRoute('post', '/', req);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.message).toBe('La factura FV1234 ya fue registrada en el ingreso ING-0009.');
+    expect(mockConnection.query.mock.calls.some(([sql]) => /INSERT INTO ingresos/.test(sql))).toBe(false);
+  });
+
+  it('compara prefijo y número normalizados (mayúsculas, sin espacios) y excluye anulados', async () => {
+    mockConnection.query.mockImplementation(fakeQuery());
+    const req = { body: basePayload({ prefijo_factura: ' fv ', numero_factura: ' 1234 ' }), user: { sub: 1 } };
+
+    const res = await runRoute('post', '/', req);
+
+    expect(res.statusCode).toBe(201);
+    const [sql, params] = mockConnection.query.mock.calls.find(([s]) => /WHERE UPPER/.test(s));
+    expect(params).toEqual(['FV', '1234']);
+    expect(sql).toMatch(/estado <> 'anulado'/);
+  });
+
+  it('toma un lock por factura y lo libera después de guardar', async () => {
+    mockConnection.query.mockImplementation(fakeQuery());
+    await runRoute('post', '/', { body: basePayload(), user: { sub: 1 } });
+
+    const sqls = mockConnection.query.mock.calls.map(([s]) => s);
+    const iLock = sqls.findIndex(s => /GET_LOCK/.test(s));
+    const iInsert = sqls.findIndex(s => /INSERT INTO ingresos\s*\(/.test(s));
+    const iRelease = sqls.findIndex(s => /RELEASE_LOCK/.test(s));
+    expect(iLock).toBeGreaterThan(-1);
+    expect(iLock).toBeLessThan(iInsert);
+    expect(iRelease).toBeGreaterThan(iInsert);
+    expect(mockConnection.query.mock.calls[iLock][1]).toEqual(['ingreso_factura:FV:1234']);
+  });
+
+  it('responde 409 si otra persona está guardando la misma factura en ese momento', async () => {
+    mockConnection.query.mockImplementation(fakeQuery({ lockOk: 0 }));
+    const res = await runRoute('post', '/', { body: basePayload(), user: { sub: 1 } });
+
+    expect(res.statusCode).toBe(409);
+    expect(mockConnection.query.mock.calls.some(([sql]) => /INSERT INTO ingresos/.test(sql))).toBe(false);
+    expect(mockConnection.query.mock.calls.some(([sql]) => /RELEASE_LOCK/.test(sql))).toBe(false);
+  });
+
+  it('no valida unicidad cuando el ingreso no trae factura (devoluciones)', async () => {
+    mockConnection.query.mockImplementation(fakeQuery());
+    const req = { body: basePayload({ prefijo_factura: null, numero_factura: null, es_devolucion: true }), user: { sub: 1 } };
+
+    const res = await runRoute('post', '/', req);
+
+    expect(res.statusCode).toBe(201);
+    expect(mockConnection.query.mock.calls.some(([sql]) => /GET_LOCK|WHERE UPPER/.test(sql))).toBe(false);
+  });
+});
+
+describe('GET /ingresos/factura-disponible', () => {
+  beforeEach(() => {
+    mockConnection.query.mockReset();
+  });
+
+  it('indica que la factura no está disponible y en qué ingreso está', async () => {
+    mockConnection.query.mockImplementation(fakeQuery({ facturaExistente: { id_ingreso: 9, referencia: 'ING-0009' } }));
+    const res = await runRoute('get', '/factura-disponible', { query: { prefijo: 'fv', numero: '1234' } });
+
+    expect(res.body.data).toEqual({
+      disponible: false,
+      referencia: 'ING-0009',
+      message: 'La factura FV1234 ya fue registrada en el ingreso ING-0009.'
+    });
+  });
+
+  it('indica disponible cuando no existe', async () => {
+    mockConnection.query.mockImplementation(fakeQuery());
+    const res = await runRoute('get', '/factura-disponible', { query: { prefijo: 'FV', numero: '99' } });
+    expect(res.body.data).toEqual({ disponible: true });
+  });
+
+  it('no consulta la base si falta prefijo o número', async () => {
+    const res = await runRoute('get', '/factura-disponible', { query: { prefijo: 'FV' } });
+    expect(res.body.data).toEqual({ disponible: true });
+    expect(mockConnection.query).not.toHaveBeenCalled();
   });
 });
