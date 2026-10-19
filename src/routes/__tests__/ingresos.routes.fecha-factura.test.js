@@ -241,7 +241,16 @@ describe('GET /ingresos/factura-disponible', () => {
     expect(res.body.data).toEqual({ disponible: true });
   });
 
-  it('no consulta la base si falta prefijo o número', async () => {
+  it('verifica facturas sin prefijo solo por el número', async () => {
+    mockConnection.query.mockImplementation(fakeQuery({ facturaExistente: { id_ingreso: 9, referencia: 'ING-0009' } }));
+    const res = await runRoute('get', '/factura-disponible', { query: { prefijo: '', numero: '1234' } });
+
+    expect(res.body.data.disponible).toBe(false);
+    const [, params] = mockConnection.query.mock.calls[0];
+    expect(params).toEqual(['', '1234']);
+  });
+
+  it('no consulta la base si falta el número', async () => {
     const res = await runRoute('get', '/factura-disponible', { query: { prefijo: 'FV' } });
     expect(res.body.data).toEqual({ disponible: true });
     expect(mockConnection.query).not.toHaveBeenCalled();

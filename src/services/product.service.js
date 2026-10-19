@@ -73,7 +73,7 @@ function parseImageDataUrl(dataUrl) {
 
 async function ensureProductExists(id) {
   const rows = await query(
-    `SELECT id_producto, id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, principio_activo,
+    `SELECT id_producto, id_medicamento_hs, sku, codigo_control, codigo_barras, nombre_comercial, nombre_marca, principio_activo,
             concentracion, presentacion, unidad_medida, registro_invima, cum, consecutivo_cum,
             id_categoria, id_forma, codigo_atc, codigo_dci, clasificacion, id_laboratorio, tipo_producto,
             mx_control, requiere_cadena_frio, temp_min, temp_max, iva_tasa,
@@ -353,6 +353,96 @@ async function saveTrace({ proceso, subproceso, estado = 'terminado', idUsuario 
       [proceso, subproceso, estado, idUsuario, referenciaTipo, referenciaId, descripcion, payload ? JSON.stringify(payload) : null]
     );
   } catch { /* trazabilidad es no-crítica */ }
+}
+
+const normalizarTextoComparable = (s) => String(s ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
+
+// Dosis o forma farmacéutica en el texto: es una descripción (quizá escrita
+// con otro formato que la de HS, ej. "APIXABAN 2,5 MG TABLETA"), no una marca.
+const PARECE_DESCRIPCION = /\d\s*(MG|ML|UI|G|MCG|%)\b|TABLETA|CAPSULA|SOLUCION|INYECTABLE|POLVO|SUSPENSION|JARABE|CREMA/i;
+
+// nombre_comercial guardó históricamente dos cosas: la descripción de HS
+// (precargada al enlazar) o la marca que la farmacia tecleó encima (HUMIRA,
+// EXFORGE…). Es marca propia si difiere de la descripción de HS y no tiene
+// pinta de descripción.
+export function esMarcaPropia(nombreComercial, descripcionHs) {
+  const nombre = normalizarTextoComparable(nombreComercial);
+  if (!nombre) return false;
+  if (nombre === normalizarTextoComparable(descripcionHs)) return false;
+  return !PARECE_DESCRIPCION.test(nombre) && nombre.length <= 40;
+}
+
+// Completa nombre_marca ("Nombre comercial" en Maestro MX) para productos
+// enlazados a HealthSphere. La columna nació vacía; la marca se toma, en orden:
+//   1. de nombre_comercial, si la farmacia ya había escrito ahí una marca
+//      propia (varias marcas de distintos laboratorios comparten el mismo
+//      medicamento HS, así que la de HS no sirve para esas);
+//   2. de suhc_new_tbl_medicine.nombreComercial, que HS trae solo en algunos.
+// nombre_comercial (la "Descripción") no se modifica. Idempotente: solo toca
+// productos con nombre_marca vacío, así que no pisa lo ya escrito.
+// Con dryRun=true solo reporta qué cambiaría, sin escribir.
+export async function backfillNombreMarcaFromHs(userId = null, { dryRun = false } = {}) {
+  const candidates = await query(
+    `SELECT id_producto, id_medicamento_hs, sku, nombre_comercial
+       FROM productos
+      WHERE id_medicamento_hs IS NOT NULL AND (nombre_marca IS NULL OR TRIM(nombre_marca) = '')`
+  );
+  if (!candidates.length) {
+    return { candidatos: 0, actualizados: 0, desde_nombre_comercial: 0, desde_hs: 0, dry_run: dryRun, muestra: [] };
+  }
+
+  let connection;
+  let hsByMed = new Map();
+  try {
+    connection = await hsPool.getConnection();
+    const ids = [...new Set(candidates.map((c) => c.id_medicamento_hs))];
+    const placeholders = ids.map(() => '?').join(',');
+    const [rows] = await connection.query(
+      `SELECT id, medicamento, nombreComercial FROM suhc_new_tbl_medicine WHERE id IN (${placeholders})`,
+      ids
+    );
+    hsByMed = new Map(rows.map((r) => [r.id, r]));
+  } finally {
+    if (connection) connection.release();
+  }
+
+  let actualizados = 0;
+  let desdeNombreComercial = 0;
+  let desdeHs = 0;
+  const muestra = [];
+  for (const p of candidates) {
+    const hs = hsByMed.get(p.id_medicamento_hs);
+    const propia = esMarcaPropia(p.nombre_comercial, hs?.medicamento);
+    const marca = propia ? normalizarNombreMarca(p.nombre_comercial) : normalizarNombreMarca(hs?.nombreComercial);
+    if (!marca) continue;
+    if (propia) desdeNombreComercial++; else desdeHs++;
+    if (!dryRun) {
+      await query(
+        `UPDATE productos SET nombre_marca = ?
+          WHERE id_producto = ? AND (nombre_marca IS NULL OR TRIM(nombre_marca) = '')`,
+        [marca, p.id_producto]
+      );
+    }
+    actualizados++;
+    if (muestra.length < 10) {
+      muestra.push({ id_producto: p.id_producto, sku: p.sku, nombre_comercial: p.nombre_comercial, nombre_marca: marca, origen: propia ? 'nombre_comercial' : 'hs' });
+    }
+  }
+
+  const resumen = {
+    candidatos: candidates.length, actualizados,
+    desde_nombre_comercial: desdeNombreComercial, desde_hs: desdeHs
+  };
+  if (!dryRun) {
+    await saveTrace({
+      proceso: 'maestro_mx', subproceso: 'backfill_nombre_marca', estado: 'terminado',
+      idUsuario: userId, referenciaTipo: 'producto',
+      descripcion: `Backfill de nombre_marca: ${actualizados} de ${candidates.length} productos actualizados`,
+      payload: resumen
+    });
+  }
+
+  return { ...resumen, dry_run: dryRun, muestra };
 }
 
 // Completa codigo_dci para productos ya creados y enlazados a HealthSphere
@@ -829,6 +919,12 @@ function normalizarNombreComercial(valor) {
   return valor == null ? '' : String(valor).trim();
 }
 
+// nombre_marca sí admite NULL: vacío se guarda como NULL.
+function normalizarNombreMarca(valor) {
+  const texto = valor == null ? '' : String(valor).trim();
+  return texto || null;
+}
+
 export async function createProduct(payload, userId = null) {
   await assertTipoProductoValido(payload.tipo_producto);
 
@@ -865,8 +961,8 @@ export async function createProduct(payload, userId = null) {
       unidad_medida, registro_invima, cum, consecutivo_cum,
       id_categoria, id_forma, codigo_atc, codigo_dci, clasificacion, id_laboratorio, tipo_producto, mx_control,
       requiere_cadena_frio, temp_min, temp_max, iva_tasa,
-      stock_minimo, stock_maximo, punto_reorden, activo, creado_por
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      stock_minimo, stock_maximo, punto_reorden, activo, creado_por, nombre_marca
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       payload.id_medicamento_hs ?? null,
       payload.sku,
@@ -896,7 +992,8 @@ export async function createProduct(payload, userId = null) {
       payload.stock_maximo ?? 0,
       payload.punto_reorden ?? 0,
       payload.activo ?? true,
-      userId
+      userId,
+      normalizarNombreMarca(payload.nombre_marca)
     ]
   );
 
@@ -968,7 +1065,8 @@ export async function updateProduct(id, payload, userId = null) {
       stock_maximo = ?,
       punto_reorden = ?,
       activo = ?,
-      modificado_por = ?
+      modificado_por = ?,
+      nombre_marca = ?
     WHERE id_producto = ?`,
     [
       merged.id_medicamento_hs ?? null,
@@ -998,6 +1096,7 @@ export async function updateProduct(id, payload, userId = null) {
       merged.punto_reorden,
       merged.activo,
       userId,
+      normalizarNombreMarca(merged.nombre_marca),
       id
     ]
   );

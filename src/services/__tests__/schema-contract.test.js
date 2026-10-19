@@ -20,7 +20,7 @@ import { query } from '../../config/db.js';
 const REQUIRED_COLUMNS = {
   productos: [
     'id_producto', 'activo', 'codigo_barras', 'requiere_cadena_frio',
-    'es_controlado', 'stock_minimo', 'costo_referencia', 'sku', 'nombre_comercial'
+    'es_controlado', 'stock_minimo', 'costo_referencia', 'sku', 'nombre_comercial', 'nombre_marca'
   ],
   solicitudes_compra_sedes_detalle: [
     'id_solicitud_compra_detalle', 'id_solicitud_compra_sede', 'id_producto',

@@ -20,7 +20,8 @@ import {
   backfillFormaFarmaceuticaFromHs,
   backfillConcentracionFromHs,
   backfillCodigoAtcFromHs,
-  backfillUnidadMedidaFromHs
+  backfillUnidadMedidaFromHs,
+  backfillNombreMarcaFromHs
 } from '../services/product.service.js';
 
 const productSchema = z.object({
@@ -36,6 +37,9 @@ const productSchema = z.object({
   // nombre'). La columna en BD es NOT NULL: el service normaliza a cadena
   // vacía, no a NULL (ver createProduct/updateProduct).
   nombre_comercial: z.string().optional().nullable(),
+  // Marca comercial real (opcional). En el formulario nombre_comercial se
+  // rotula "Descripción" y este campo es el "Nombre comercial".
+  nombre_marca: z.string().optional().nullable(),
   principio_activo: z.string().optional().nullable(),
   concentracion: z.string().optional().nullable(),
   presentacion: z.number().int().optional().nullable(),
@@ -111,6 +115,18 @@ productsRouter.get(
   })
 );
 
+
+// POST /products/backfill-nombre-marca — completa nombre_marca ("Nombre
+// comercial") con la marca que trae HealthSphere. Idempotente: solo toca
+// nombre_marca vacío. ?dry_run=true reporta sin escribir.
+productsRouter.post(
+  '/backfill-nombre-marca',
+  authRequired,
+  asyncHandler(async (req, res) => {
+    const data = await backfillNombreMarcaFromHs(req.user?.sub ?? null, { dryRun: req.query.dry_run === 'true' });
+    res.json({ success: true, data });
+  })
+);
 
 // POST /products/backfill-codigo-dci — completa codigo_dci en productos ya
 // creados y enlazados a HealthSphere que quedaron sin ese dato (creados

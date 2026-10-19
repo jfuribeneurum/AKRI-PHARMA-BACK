@@ -213,3 +213,35 @@ describe('updateProduct completa clasificacion_atc antes de guardar (fk_prod_atc
     expect(spy.atcInsertados).toEqual([]);
   });
 });
+
+// nombre_marca ("Nombre comercial" en el formulario) va al final del INSERT
+// y del UPDATE (antes del WHERE): penúltimo parámetro del UPDATE, último del INSERT.
+describe('nombre_marca (nombre comercial opcional)', () => {
+  beforeEach(() => {
+    query.mockReset();
+    mockHsConnection.query.mockReset();
+    mockHsConnection.query.mockResolvedValue([[]]);
+  });
+
+  it('createProduct guarda la marca recortada, y NULL si viene vacía', async () => {
+    const spy = routeQueries({ atcExistentes: ['R', 'R06', 'R06A', 'R06AX', 'R06AX26'] });
+
+    await createProduct({ ...PAYLOAD_BILASTINA, nombre_marca: '  BILAXTEN  ' });
+    expect(spy.productoInsert.at(-1)).toBe('BILAXTEN');
+
+    await createProduct({ ...PAYLOAD_BILASTINA, nombre_marca: '' });
+    expect(spy.productoInsert.at(-1)).toBeNull();
+  });
+
+  it('updateProduct conserva la marca actual cuando la edición no la toca', async () => {
+    const spy = routeQueries({
+      atcExistentes: [],
+      productoActual: { id_producto: 77, sku: 'MX1052', nombre_comercial: 'BILASTINA 20 MG', nombre_marca: 'BILAXTEN', codigo_atc: null, tipo_producto: 'medicamento' }
+    });
+
+    await updateProduct(77, { concentracion: '20 MG' });
+
+    expect(spy.productoUpdate.at(-2)).toBe('BILAXTEN');
+    expect(spy.productoUpdate.at(-1)).toBe(77);
+  });
+});

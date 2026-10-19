@@ -804,6 +804,14 @@ async function ensureIngresosSchema() {
     console.log('[schema] Columna es_controlado agregada a productos');
   }
 
+  // Nombre comercial / marca real del producto. La columna nombre_comercial
+  // histórica se sigue usando como descripción (es la que rotula el producto
+  // en toda la app), así que la marca va en una columna aparte y opcional.
+  if (!(await columnExists('productos', 'nombre_marca'))) {
+    await runStatement(`ALTER TABLE productos ADD COLUMN nombre_marca VARCHAR(255) NULL AFTER nombre_comercial`);
+    console.log('[schema] Columna nombre_marca agregada a productos');
+  }
+
   if (!(await columnExists('productos', 'codigo_dci'))) {
     await runStatement(`ALTER TABLE productos ADD COLUMN codigo_dci VARCHAR(255) NULL AFTER codigo_atc`);
     console.log('[schema] Columna codigo_dci agregada a productos');

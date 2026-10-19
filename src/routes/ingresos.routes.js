@@ -355,13 +355,15 @@ router.get('/next-number', asyncHandler(async (_req, res) => {
 function normalizarFactura(prefijo, numero) {
   const p = String(prefijo ?? '').trim().toUpperCase();
   const n = String(numero ?? '').trim().toUpperCase();
-  return p && n ? { prefijo: p, numero: n } : null;
+  // El prefijo es opcional: una factura sin prefijo se identifica solo por el
+  // número (y no choca con la misma numeración bajo otro prefijo).
+  return n ? { prefijo: p, numero: n } : null;
 }
 
 async function buscarIngresoConFactura(connection, { prefijo, numero }) {
   const [rows] = await connection.query(
     `SELECT id_ingreso, referencia FROM ingresos
-      WHERE UPPER(TRIM(prefijo_factura)) = ? AND UPPER(TRIM(numero_factura)) = ?
+      WHERE UPPER(TRIM(COALESCE(prefijo_factura, ''))) = ? AND UPPER(TRIM(numero_factura)) = ?
         AND estado <> 'anulado'
       LIMIT 1`,
     [prefijo, numero]
